@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
@@ -12,9 +15,19 @@ import (
 
 var db *sql.DB
 
+// Migration mutex to prevent concurrent migrations
+var migrationMutex sync.Mutex
+
 func initDB() {
 	var err error
-	db, err = sql.Open("sqlite", "./database/ojs_monitor.db")
+
+	// Ensure directory exists
+	dbDir := filepath.Dir(cfg.DBPath)
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		log.Fatalf("Failed to create database directory: %v", err)
+	}
+
+	db, err = sql.Open("sqlite", cfg.DBPath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,6 +42,10 @@ func initDB() {
 }
 
 func runMigrations() {
+	// Lock to prevent concurrent migrations from multiple server starts
+	migrationMutex.Lock()
+	defer migrationMutex.Unlock()
+
 	// Create schema_migrations table
 	db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`)
 
@@ -218,11 +235,42 @@ func runMigrations() {
 		currentVersion = 10
 	}
 
+	// Migration v11: Add file_id to fim_events for linking to project_files
+	if currentVersion < 11 {
+		db.Exec(`ALTER TABLE fim_events ADD COLUMN file_id INTEGER REFERENCES project_files(id);`)
+
+		// Backfill file_id for existing events
+		db.Exec(`
+			UPDATE fim_events
+			SET file_id = (
+				SELECT pf.id FROM project_files pf
+				WHERE pf.project_id = fim_events.project_id
+				AND pf.file_path = fim_events.file_path
+			)
+			WHERE file_id IS NULL AND file_path IS NOT NULL
+		`)
+
+		db.Exec(`INSERT INTO schema_migrations (version) VALUES (11);`)
+		currentVersion = 11
+	}
+
+	// Migration v12: Add scheduled_at to jobs for scheduled integrity scans
+	if currentVersion < 12 {
+		db.Exec(`ALTER TABLE jobs ADD COLUMN scheduled_at INTEGER;`)
+		db.Exec(`ALTER TABLE projects ADD COLUMN integrity_scan_interval_hours INTEGER DEFAULT 24;`)
+
+		db.Exec(`INSERT INTO schema_migrations (version) VALUES (12);`)
+		currentVersion = 12
+	}
+
 	log.Println("Database initialized and migrated successfully.")
 }
 
 
 func getProjects() ([]Project, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 	rows, err := db.Query("SELECT id, name, description, template, app_path, files_path, blacklist_exts, whitelist_paths, db_host, db_user, db_pass, db_name, status, COALESCE(baseline_total, 0), COALESCE(baseline_processed, 0), COALESCE(error_message, ''), COALESCE(rescan_interval, 10), COALESCE(baseline_at, 0), COALESCE(watcher_status, 'stopped'), COALESCE(integrity_scan_enabled, 0), COALESCE(last_integrity_scan, 0) FROM projects")
 	if err != nil {
 		return nil, err
@@ -256,6 +304,9 @@ func getProjects() ([]Project, error) {
 }
 
 func getProjectByID(id int) (Project, error) {
+	if db == nil {
+		return Project{}, fmt.Errorf("database not initialized")
+	}
 	projects, err := getProjects()
 	if err != nil {
 		return Project{}, err
@@ -348,10 +399,13 @@ func GetAuditLogs() ([]AuditLog, error) {
 	return logs, nil
 }
 
-// SeedDefaultAdmin creates or updates the default admin
+// SeedDefaultAdmin creates the default admin if none exists
+// NOTE: On first run, creates admin/admin123. In production, set ADMIN_PASSWORD env
+// and change credentials immediately after first login.
 func SeedDefaultAdmin() error {
 	username := "admin"
-	password := "admin123"
+	// Get password from env, or use default (CHANGE IN PRODUCTION!)
+	password := getEnv("ADMIN_PASSWORD", "admin123")
 
 	// Check if admin exists
 	var exists bool
@@ -361,22 +415,12 @@ func SeedDefaultAdmin() error {
 	}
 
 	if exists {
-		// Admin exists, verify password is correct by checking
-		// We use a fixed bcrypt cost for consistency
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
-		if err != nil {
-			return err
-		}
-
-		// Update the password hash to ensure it's correct
-		_, err = db.Exec("UPDATE admins SET password_hash = ? WHERE username = ?", string(hash), username)
-		if err != nil {
-			log.Printf("Warning: failed to update admin password: %v", err)
-		}
-		log.Println("Admin verified: admin / admin123")
+		// Admin already exists - don't update password every startup
+		// This prevents accidental password reset in production
+		log.Printf("Admin user '%s' already exists\n", username)
 	} else {
-		// Create new admin
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+		// Create new admin with bcrypt cost 12 (secure default)
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 		if err != nil {
 			return err
 		}
@@ -384,12 +428,15 @@ func SeedDefaultAdmin() error {
 		if err != nil {
 			return err
 		}
-		log.Println("Default admin created: admin / admin123")
+		log.Printf("Default admin created: %s / (set via ADMIN_PASSWORD env)\n", username)
 	}
 	return nil
 }
 
 func getProjectFiles(projectID int) (map[string]ProjectFile, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 	rows, err := db.Query("SELECT id, project_id, file_path, hash, file_size, mod_time, status FROM project_files WHERE project_id=?", projectID)
 	if err != nil {
 		return nil, err

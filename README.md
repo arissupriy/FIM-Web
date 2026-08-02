@@ -73,39 +73,35 @@ git clone https://github.com/your-repo/ojs-monitor.git
 cd ojs-monitor
 ```
 
-### 2. Setup Backend
+### 2. Configure Environment
 
 ```bash
-cd backend
-
-# Install dependencies
-go mod tidy
-
-# Create database directory
-mkdir -p database
-
-# Build the application
-go build -o ojs-monitor
-
-# Run the backend (first run creates SQLite DB)
-./ojs-monitor
+# Edit .env in root directory
+cp .env .env  # .env already exists, edit as needed
+nano .env
 ```
 
-The backend will start on `http://localhost:8080`.
-
-### 3. Setup Frontend
+### 3. Start Backend & Frontend
 
 ```bash
-cd frontend
+# Start backend server (auto-builds and runs)
+make start
 
-# Install dependencies
-npm install
+# Check status
+make status
 
-# Run development server
-npm run dev
+# View logs
+make logs
+
+# Start frontend (in another terminal)
+make dev
+
+# Stop backend
+make stop
 ```
 
-The frontend will start on `http://localhost:3000`.
+The backend runs on `http://localhost:8080`.
+The frontend runs on `http://localhost:3000`.
 
 ### 4. Login
 
@@ -145,10 +141,10 @@ Default credentials:
 cd backend
 
 # Build for Linux AMD64
-GOOS=linux GOARCH=amd64 go build -o ojs-monitor
+make build-linux
 
 # Copy to server
-scp ojs-monitor user@server:/opt/ojs-monitor/
+scp server-linux user@server:/opt/ojs-monitor/server
 ```
 
 #### Frontend
@@ -176,9 +172,10 @@ After=network.target
 Type=simple
 User=www-data
 WorkingDirectory=/opt/ojs-monitor
-ExecStart=/opt/ojs-monitor/ojs-monitor
+ExecStart=/opt/ojs-monitor/server
 Restart=always
 RestartSec=5
+EnvironmentFile=/opt/ojs-monitor/.env
 
 [Install]
 WantedBy=multi-user.target
@@ -227,15 +224,12 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./backend/database:/app/database
+      - ./backend/data:/app/data
       - /var/www/ojs:/var/www/ojs:ro
     depends_on:
       - mysql
-    environment:
-      - DB_HOST=mysql
-      - DB_NAME=ojs
-      - DB_USER=ojs_user
-      - DB_PASS=your_password
+    env_file:
+      - ./backend/.env
 
   frontend:
     build: ./frontend
@@ -260,16 +254,29 @@ volumes:
 
 ## Configuration
 
-### Environment Variables (Optional)
+### Environment Variables
+
+Create a `.env` file (copy from `.env.example`) to configure the backend:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Backend server port |
-| `JWT_SECRET` | (auto-generated) | Secret for JWT signing |
+| `HOST` | `0.0.0.0` | Server bind address |
+| `SECRET_KEY` | (required) | JWT signing secret |
+| `DB_PATH` | `./data/ojs_monitor.db` | SQLite database path |
+| `LOCALE` | `id-ID` | Date/time formatting locale |
+| `FIM_BUFFER_SIZE` | `1000` | FIM event buffer size |
+| `FIM_BATCH_INTERVAL_MS` | `1000` | Batch processing interval |
+| `FIM_DEBOUNCE_MS` | `500` | Event debounce window |
+| `LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
+| `CORS_ORIGINS` | `http://localhost:3000` | Allowed CORS origins |
+| `SESSION_TIMEOUT_MINUTES` | `60` | Session timeout |
+| `MAX_FILE_SIZE_MB` | `100` | Max file size to hash |
+| `OJS_DB_TIMEOUT_SECONDS` | `10` | OJS database connection timeout |
 
 ### Database Directory
 
-SQLite database is stored in `./database/ojs_monitor.db`. This directory is gitignored.
+SQLite database is stored in `./data/ojs_monitor.db`. This directory is gitignored.
 
 ## API Endpoints
 

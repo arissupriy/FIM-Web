@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// escapeLike escapes special characters in LIKE patterns to prevent SQL injection
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
 
 func testDBConnection(p Project) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -74,15 +83,22 @@ func handleGetProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create context with timeout for metrics queries
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.DBQueryTimeoutSecs)*time.Second)
+	defer cancel()
+
 	var res []ProjectResponse
 	for _, p := range projects {
 		p.Configured = p.IsConfigured()
 		pr := ProjectResponse{Project: p}
 		if p.Status == "active" || p.Status == "completed_with_warnings" || p.Status == "error" {
-			metrics, err := FastAuditProject(context.Background(), p)
+			metrics, err := FastAuditProject(ctx, p)
 			if err == nil {
 				metrics.Status = p.Status
 				pr.Metrics = &metrics
+			} else {
+				// Log error but don't fail the entire request
+				log.Printf("Warning: failed to get metrics for project %d: %v", p.ID, err)
 			}
 		}
 		res = append(res, pr)
@@ -150,7 +166,12 @@ func handleAddProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.ID = id
-	adminID := r.Context().Value("admin_id").(int)
+	adminIDVal := r.Context().Value("admin_id")
+	adminID, ok := adminIDVal.(int)
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Invalid session")
+		return
+	}
 	LogActivity(adminID, "ADD_PROJECT", p.Name)
 
 	respondJSON(w, http.StatusCreated, p)
@@ -181,7 +202,12 @@ func handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adminID := r.Context().Value("admin_id").(int)
+	adminIDVal := r.Context().Value("admin_id")
+	adminID, ok := adminIDVal.(int)
+	if !ok {
+		respondError(w, http.StatusUnauthorized, "Invalid session")
+		return
+	}
 	LogActivity(adminID, "UPDATE_PROJECT", p.Name)
 
 	respondJSON(w, http.StatusOK, p)
@@ -234,9 +260,14 @@ func handleAuditProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch cached or fast metrics
-	metrics, err := FastAuditProject(context.Background(), *targetProject)
+	// Fetch cached or fast metrics with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.DBQueryTimeoutSecs)*time.Second)
+	defer cancel()
+
+	metrics, err := FastAuditProject(ctx, *targetProject)
 	if err != nil {
+		// Return partial data instead of error
+		log.Printf("Warning: failed to get audit metrics for project %d: %v", targetProject.ID, err)
 		respondJSON(w, http.StatusOK, DashboardMetrics{
 			Status:            targetProject.Status,
 			BaselineTotal:     targetProject.BaselineTotal,
@@ -265,8 +296,11 @@ func handleGetProjectDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get OJS details
-	details, err := getOJSDetails(context.Background(), p)
+	// Get OJS details with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.DBQueryTimeoutSecs)*time.Second)
+	defer cancel()
+
+	details, err := getOJSDetails(ctx, p)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to get OJS details: "+err.Error())
 		return
@@ -353,6 +387,79 @@ func handleStartScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleForceScan cancels existing jobs and starts a new scan immediately
+func handleForceScan(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	p, err := getProjectByID(id)
+	if err != nil {
+		respondError(w, http.StatusNotFound, "Project not found")
+		return
+	}
+
+	// Validate paths
+	for _, ap := range p.AppPaths {
+		if ap != "" {
+			if _, err := os.Stat(ap); os.IsNotExist(err) {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("App path not found: %s", ap))
+				return
+			}
+		}
+	}
+	for _, fp := range p.FilesPaths {
+		if fp != "" {
+			if _, err := os.Stat(fp); os.IsNotExist(err) {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("Uploads path not found: %s", fp))
+				return
+			}
+		}
+	}
+
+	// Validate DB connection
+	if err := testDBConnection(p); err != nil {
+		respondError(w, http.StatusBadRequest, "Database connection failed: "+err.Error())
+		return
+	}
+
+	// Cancel all existing queued/scheduled jobs for this project
+	db.Exec("UPDATE jobs SET status = 'cancelled' WHERE project_id = ? AND status IN ('queued', 'running', 'scheduled')", id)
+
+	// Determine job type
+	var jobType string
+	if p.BaselineAt > 0 {
+		jobType = "integrity_scan"
+	} else {
+		jobType = "initial_baseline"
+	}
+
+	// Insert new job as queued (will run immediately via worker)
+	now := time.Now().Unix()
+	_, err = db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, ?, 'queued', ?)", id, jobType, now)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to queue job: "+err.Error())
+		return
+	}
+
+	// Update project status
+	if jobType == "initial_baseline" {
+		db.Exec("UPDATE projects SET status='pending_baseline' WHERE id=?", id)
+	}
+
+	// Trigger worker immediately
+	TriggerWorker()
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Force scan started: %s", jobType),
+		"job_type": jobType,
+	})
+}
+
 // handleResetBaseline resets the baseline and starts fresh
 func handleResetBaseline(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -367,20 +474,19 @@ func handleResetBaseline(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "Project not found")
 		return
 	}
+	_ = p // used for potential future validation
 
-	// Check if scan is in progress
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status IN ('queued', 'running')", p.ID).Scan(&count)
-	if count > 0 {
-		respondError(w, http.StatusConflict, "A scan is already in progress. Please wait.")
-		return
-	}
+	// Cancel any stuck jobs first
+	db.Exec("UPDATE jobs SET status = 'cancelled' WHERE project_id = ? AND status IN ('queued', 'running')", id)
 
-	// Clear existing files (but keep history)
+	// Clear existing files (start fresh)
 	db.Exec("DELETE FROM project_files WHERE project_id = ?", id)
 
+	// Keep FIM events for forensic history, but clear file_id references
+	db.Exec("UPDATE fim_events SET file_id = NULL WHERE project_id = ?", id)
+
 	// Reset baseline timestamp
-	db.Exec("UPDATE projects SET baseline_at = 0, baseline_total = 0, baseline_processed = 0 WHERE id = ?", id)
+	db.Exec("UPDATE projects SET baseline_at = 0, baseline_total = 0, baseline_processed = 0, watcher_status = 'stopped' WHERE id = ?", id)
 
 	// Queue new baseline job
 	_, err = db.Exec("INSERT INTO jobs (project_id, type, status) VALUES (?, 'initial_baseline', 'queued')", id)
@@ -399,6 +505,7 @@ func handleResetBaseline(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStartIntegrityScan starts a manual integrity scan
+// Mode: "now" (force immediate) or "later" (schedule for next interval)
 func handleStartIntegrityScan(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -418,15 +525,51 @@ func handleStartIntegrityScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if scan is in progress
-	var count int
-	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status IN ('queued', 'running')", p.ID).Scan(&count)
-	if count > 0 {
-		respondError(w, http.StatusConflict, "A scan is already in progress or queued for this project")
+	// Parse mode from query/body (default: "now")
+	mode := "now"
+	if r.URL.Query().Get("mode") == "later" {
+		mode = "later"
+	}
+
+	// Check if scan is already in progress (only for "now" mode)
+	if mode == "now" {
+		var count int
+		db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status IN ('queued', 'running')", p.ID).Scan(&count)
+		if count > 0 {
+			respondError(w, http.StatusConflict, "A scan is already in progress or queued")
+			return
+		}
+	}
+
+	now := time.Now().Unix()
+
+	if mode == "later" {
+		// Schedule for next interval
+		intervalHours := 24
+		if p.IntegrityScanEnabled == 1 {
+			db.QueryRow("SELECT COALESCE(integrity_scan_interval_hours, 24) FROM projects WHERE id = ?", id).Scan(&intervalHours)
+		}
+		nextScheduled := now + int64(intervalHours*3600)
+
+		// Check if already scheduled
+		var existingCount int
+		db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND type = 'integrity_scan' AND status = 'scheduled'", id).Scan(&existingCount)
+		if existingCount > 0 {
+			respondError(w, http.StatusConflict, "An integrity scan is already scheduled")
+			return
+		}
+
+		db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, 'integrity_scan', 'scheduled', ?)", id, nextScheduled)
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"message": fmt.Sprintf("Integrity scan scheduled for %s", time.Unix(nextScheduled, 0).Format("Jan 2, 15:04")),
+			"scheduled_at": nextScheduled,
+		})
 		return
 	}
 
-	_, err = db.Exec("INSERT INTO jobs (project_id, type, status) VALUES (?, 'integrity_scan', 'queued')", id)
+	// Force run now
+	_, err = db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, 'integrity_scan', 'queued', ?)", id, now)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to queue job: "+err.Error())
 		return
@@ -463,7 +606,18 @@ func handleGetProjectJobs(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid project ID")
 		return
 	}
-	rows, err := db.Query("SELECT id, type, status, error_message, created_at, COALESCE(finished_at, '') FROM jobs WHERE project_id = ? ORDER BY id DESC LIMIT 50", id)
+
+	// Get jobs (exclude cancelled)
+	rows, err := db.Query(`
+		SELECT id, type, status, error_message,
+		       COALESCE(scheduled_at, 0) as scheduled_at,
+		       created_at,
+		       COALESCE(finished_at, '') as finished_at
+		FROM jobs
+		WHERE project_id = ? AND status != 'cancelled'
+		ORDER BY COALESCE(scheduled_at, 0) DESC, id DESC
+		LIMIT 100
+	`, id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -474,15 +628,25 @@ func handleGetProjectJobs(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var jID int
 		var jType, jStatus, jErr, jCreated, jFinished string
-		rows.Scan(&jID, &jType, &jStatus, &jErr, &jCreated, &jFinished)
+		var jScheduledAt int64
+		rows.Scan(&jID, &jType, &jStatus, &jErr, &jScheduledAt, &jCreated, &jFinished)
 		jobs = append(jobs, map[string]interface{}{
-			"id": jID, "type": jType, "status": jStatus, "error": jErr, "created_at": jCreated, "updated_at": jFinished,
+			"id": jID,
+			"type": jType,
+			"status": jStatus,
+			"error": jErr,
+			"scheduled_at": jScheduledAt,
+			"created_at": jCreated,
+			"finished_at": jFinished,
 		})
 	}
 	if jobs == nil {
 		jobs = []map[string]interface{}{}
 	}
-	respondJSON(w, http.StatusOK, jobs)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"data": jobs,
+	})
 }
 
 func handleGetProjectFiles(w http.ResponseWriter, r *http.Request) {
@@ -505,7 +669,7 @@ func handleGetProjectFiles(w http.ResponseWriter, r *http.Request) {
 		var fPath, fHash, fStatus, fCreated string
 		rows.Scan(&fID, &fPath, &fHash, &fStatus, &fCreated)
 		files = append(files, map[string]interface{}{
-			"id": fID, "path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
+			"id": fID, "file_path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
 		})
 	}
 	if files == nil {
@@ -547,7 +711,7 @@ func handleGetProjectFilesPaginated(w http.ResponseWriter, r *http.Request) {
 
 	if search != "" {
 		baseConditions += " AND file_path LIKE ?"
-		searchPattern := "%" + search + "%"
+		searchPattern := "%" + escapeLike(search) + "%"
 		args = append(args, searchPattern)
 		countArgs = append(countArgs, searchPattern)
 	}
@@ -618,7 +782,7 @@ func handleGetProjectFilesPaginated(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&fID, &fPath, &fHash, &fStatus, &fModTime, &fCreated, &fUpdated, &fFileType)
 
 		files = append(files, map[string]interface{}{
-			"id": fID, "path": fPath, "hash": fHash, "status": fStatus,
+			"id": fID, "file_path": fPath, "hash": fHash, "status": fStatus,
 			"file_type": fFileType,
 			"mod_time": time.Unix(fModTime, 0).Format(time.RFC3339),
 			"created_at": time.Unix(fCreated, 0).Format(time.RFC3339),
@@ -665,7 +829,7 @@ func handleGetOrphanFiles(w http.ResponseWriter, r *http.Request) {
 	if search != "" {
 		query += " AND file_path LIKE ?"
 		countQuery += " AND file_path LIKE ?"
-		searchPattern := "%" + search + "%"
+		searchPattern := "%" + escapeLike(search) + "%" // Escape special chars to prevent LIKE injection
 		args = append(args, searchPattern)
 		countArgs = append(countArgs, searchPattern)
 	}
@@ -691,7 +855,7 @@ func handleGetOrphanFiles(w http.ResponseWriter, r *http.Request) {
 		var fPath, fHash, fStatus, fCreated string
 		rows.Scan(&fID, &fPath, &fHash, &fStatus, &fCreated)
 		files = append(files, map[string]interface{}{
-			"id": fID, "path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
+			"id": fID, "file_path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
 		})
 	}
 	if files == nil {
@@ -781,7 +945,7 @@ func handleGetFileDetail(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"file": map[string]interface{}{
 			"id": fID,
-			"path": fPath,
+			"file_path": fPath,
 			"hash": fHash,
 			"status": fStatus,
 			"file_type": fileType,
@@ -1016,6 +1180,9 @@ func handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// NOTE: Currently all authenticated admins can cancel any job.
+	// If multi-tenant support is needed, add project ownership check here.
+
 	// Check job status - only allow cancelling queued jobs
 	var currentStatus string
 	var projectID int
@@ -1031,28 +1198,39 @@ func handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete the queued job
-	_, err = db.Exec("DELETE FROM jobs WHERE id = ? AND status = 'queued'", jobID)
+	result, err := db.Exec("DELETE FROM jobs WHERE id = ? AND status = 'queued'", jobID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to cancel job: "+err.Error())
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		respondError(w, http.StatusNotFound, "Job not found or already cancelled")
 		return
 	}
 
 	// Check if there are any remaining queued jobs for this project
 	var remainingQueued int
-	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'queued'", projectID).Scan(&remainingQueued)
+	if err := db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'queued'", projectID).Scan(&remainingQueued); err != nil {
+		log.Printf("Warning: failed to check remaining queued jobs: %v", err)
+	}
 
 	// If no more queued jobs, revert project status back
 	if remainingQueued == 0 {
 		// Check if there's a running job
 		var runningCount int
-		db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'running'", projectID).Scan(&runningCount)
+		if err := db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'running'", projectID).Scan(&runningCount); err != nil {
+			log.Printf("Warning: failed to check running jobs: %v", err)
+		}
 
 		if runningCount == 0 {
 			// No running job either, set status back based on configuration
 			var p Project
-			db.QueryRow("SELECT id, name, description, template, app_path, files_path, db_host, db_user, db_name FROM projects WHERE id = ?", projectID).Scan(
+			if err := db.QueryRow("SELECT id, name, description, template, app_path, files_path, db_host, db_user, db_name FROM projects WHERE id = ?", projectID).Scan(
 				&p.ID, &p.Name, &p.Description, &p.Template, new(string), new(string), &p.DBHost, &p.DBUser, &p.DBName,
-			)
+			); err != nil {
+				log.Printf("Warning: failed to get project for status revert: %v", err)
+			}
 
 			// Get current project status
 			var currentProjectStatus string
@@ -1123,7 +1301,7 @@ func handleGetFIMEvents(w http.ResponseWriter, r *http.Request) {
 	var total int
 	db.QueryRow(countQuery, countArgs...).Scan(&total)
 
-	query := "SELECT id, project_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name, actor_details, risk_level, classification, source, details, alert_sent, datetime(timestamp, 'unixepoch'), datetime(created_at, 'unixepoch') FROM fim_events " + baseConditions + " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+	query := "SELECT id, project_id, COALESCE(file_id, 0), event_type, file_path, file_hash, actor_type, actor_id, actor_name, actor_details, risk_level, classification, source, details, alert_sent, datetime(timestamp, 'unixepoch'), datetime(created_at, 'unixepoch') FROM fim_events " + baseConditions + " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := db.Query(query, args...)
@@ -1139,7 +1317,11 @@ func handleGetFIMEvents(w http.ResponseWriter, r *http.Request) {
 		var actorID, actorName, actorDetails, details sql.NullString
 		var alertSentInt int
 		var timestamp, createdAt sql.NullString
-		rows.Scan(&e.ID, &e.ProjectID, &e.EventType, &e.FilePath, &e.FileHash, &e.ActorType, &actorID, &actorName, &actorDetails, &e.RiskLevel, &e.Classification, &e.Source, &details, &alertSentInt, &timestamp, &createdAt)
+		var fileID int
+		rows.Scan(&e.ID, &e.ProjectID, &fileID, &e.EventType, &e.FilePath, &e.FileHash, &e.ActorType, &actorID, &actorName, &actorDetails, &e.RiskLevel, &e.Classification, &e.Source, &details, &alertSentInt, &timestamp, &createdAt)
+		if fileID > 0 {
+			e.FileID = &fileID
+		}
 
 		if actorID.Valid {
 			e.ActorID = actorID.String

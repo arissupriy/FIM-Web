@@ -42,6 +42,9 @@ type Job struct {
 	Type         string
 	Status       string
 	ErrorMessage string
+	FilesTotal   int `json:"files_total"`
+	FilesProcessed int `json:"files_processed"`
+	ScheduledAt  int64 `json:"scheduled_at"` // For scheduled jobs
 	CreatedAt    string
 	StartedAt    string
 	FinishedAt   string
@@ -78,7 +81,8 @@ type ProjectFile struct {
 type FIMEvent struct {
 	ID            int    `json:"id"`
 	ProjectID     int    `json:"project_id"`
-	EventType     string `json:"event_type"` // CREATED, MODIFIED, DELETED
+	FileID        *int   `json:"file_id,omitempty"` // Link to project_files.id
+	EventType     string `json:"event_type"`         // CREATED, MODIFIED, DELETED
 	FilePath      string `json:"file_path"`
 	FileHash      string `json:"file_hash,omitempty"`
 	ActorType     string `json:"actor_type,omitempty"` // OJS_USER, SYSTEM_USER, PROCESS

@@ -29,6 +29,7 @@ import {
   FileText,
   Globe,
   UserCheck,
+  Play,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -190,6 +191,7 @@ export default function ProjectDetail({
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
   const [scanLoading, setScanLoading] = useState(false);
+  const [showScanModal, setShowScanModal] = useState(false);
   const [fimFilter, setFimFilter] = useState<string>("all");
   const [fimSearch, setFimSearch] = useState<string>("");
   const [fimTypeFilter, setFimTypeFilter] = useState<string>("all");
@@ -346,16 +348,25 @@ export default function ProjectDetail({
     return () => clearInterval(interval);
   }, [id, router]);
 
-  const handleStartScan = async () => {
+  const handleStartScan = async (mode: "now" | "later" = "now") => {
     const token = localStorage.getItem("ojs_token");
+    setShowScanModal(false);
     setScanLoading(true);
     try {
-      const res = await fetch(`http://localhost:8080/api/projects/${id}/scan`, {
+      let url;
+      if (mode === "later") {
+        url = `http://localhost:8080/api/projects/${id}/integrity-scan?mode=later`;
+      } else {
+        // Force scan - cancels existing jobs and runs immediately
+        url = `http://localhost:8080/api/projects/${id}/scan/force`;
+      }
+      const res = await fetch(url, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok) {
+        alert(data.message || "Scan started!");
         fetchAllData();
       } else {
         alert("Scan failed: " + data.error);
@@ -460,7 +471,7 @@ export default function ProjectDetail({
             </Link>
             <button
               disabled={isScanning || scanLoading || project.status === "unconfigured"}
-              onClick={handleStartScan}
+              onClick={() => setShowScanModal(true)}
               className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-4 py-2 rounded-xl text-white text-sm font-medium transition-colors"
             >
               {isScanning || scanLoading ? (
@@ -499,15 +510,15 @@ export default function ProjectDetail({
       {/* Tab Navigation */}
       <div className="flex gap-1 border-b border-slate-700 mb-6">
         {[
-          { id: "overview", label: "Overview", icon: <Shield className="w-4 h-4" /> },
-          { id: "fim", label: "FIM", icon: <FileWarning className="w-4 h-4" /> },
-          { id: "orphan", label: "Orphans", icon: <AlertTriangle className="w-4 h-4" />, danger: orphanFiles.length > 0 },
-          { id: "db", label: "Database", icon: <Database className="w-4 h-4" /> },
-          { id: "jobs", label: "Jobs", icon: <Terminal className="w-4 h-4" /> },
+          { id: "overview", label: "Overview", icon: <Shield className="w-4 h-4" />, href: `/projects/${id}` },
+          { id: "fim", label: "FIM", icon: <FileWarning className="w-4 h-4" />, href: `/projects/${id}/fim` },
+          { id: "orphan", label: "Orphans", icon: <AlertTriangle className="w-4 h-4" />, danger: orphanFiles.length > 0, href: `/projects/${id}?tab=orphan` },
+          { id: "db", label: "Database", icon: <Database className="w-4 h-4" />, href: `/projects/${id}/database` },
+          { id: "jobs", label: "Jobs", icon: <Terminal className="w-4 h-4" />, href: `/projects/${id}/jobs` },
         ].map((tab) => (
-          <button
+          <Link
             key={tab.id}
-            onClick={() => setActiveTab(tab.id as TabType)}
+            href={tab.href}
             className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab.id
                 ? "border-blue-500 text-blue-400"
@@ -521,7 +532,7 @@ export default function ProjectDetail({
                 {orphanFiles.length}
               </span>
             )}
-          </button>
+          </Link>
         ))}
       </div>
 
@@ -1235,6 +1246,61 @@ export default function ProjectDetail({
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Scan Modal */}
+      {showScanModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-panel rounded-xl border border-blue-500/30 p-6 max-w-md mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 rounded-full bg-blue-500/20">
+                <RefreshCw className="w-6 h-6 text-blue-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-white">Integrity Scan</h3>
+            </div>
+            <p className="text-slate-400 mb-4">
+              Choose how to run the integrity scan:
+            </p>
+            <div className="space-y-3 mb-6">
+              <button
+                onClick={() => handleStartScan("now")}
+                disabled={scanLoading}
+                className="w-full p-4 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition text-left disabled:opacity-50"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-full bg-emerald-500/20">
+                    <Play className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div>
+                    <p className="text-white font-medium">Run Now (Force)</p>
+                    <p className="text-slate-400 text-sm">Start scan immediately</p>
+                  </div>
+                </div>
+              </button>
+              <button
+                onClick={() => handleStartScan("later")}
+                disabled={scanLoading}
+                className="w-full p-4 rounded-lg border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 transition text-left disabled:opacity-50"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-full bg-purple-500/20">
+                    <Calendar className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div>
+                    <p className="text-white font-medium">Schedule for Later</p>
+                    <p className="text-slate-400 text-sm">Add to queue, run at scheduled time</p>
+                  </div>
+                </div>
+              </button>
+            </div>
+            <button
+              onClick={() => setShowScanModal(false)}
+              className="w-full px-4 py-2 rounded-lg font-medium bg-slate-700 text-slate-300 hover:bg-slate-600"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </ProtectedLayout>

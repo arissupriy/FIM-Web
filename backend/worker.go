@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -19,12 +20,33 @@ import (
 var (
 	shutdownCh = make(chan struct{})
 	jobTrigger = make(chan struct{}, 1) // Buffered channel to trigger immediate job processing
+	// Worker mutex to prevent race conditions in job claiming
+	workerMutex sync.Mutex
 )
 
 func isUnderPath(path, base string) bool {
 	path = filepath.Clean(path)
 	base = filepath.Clean(base)
 	return path == base || strings.HasPrefix(path, base+string(os.PathSeparator))
+}
+
+// isSymlinkSafe checks if a symlink points within the allowed base paths
+// Returns true if the symlink is safe (points inside watched directory)
+func isSymlinkSafe(symlinkPath string, watchedPaths []string) bool {
+	// Resolve the symlink
+	realPath, err := filepath.EvalSymlinks(symlinkPath)
+	if err != nil {
+		// Can't resolve - treat as unsafe
+		return false
+	}
+
+	// Check if resolved path is within any watched path
+	for _, wp := range watchedPaths {
+		if wp != "" && isUnderPath(realPath, wp) {
+			return true
+		}
+	}
+	return false
 }
 
 func StartWorker() {
@@ -41,6 +63,11 @@ func StartWorker() {
 
 	// Scheduler: Trigger integrity scan jobs daily at 2 AM (if enabled)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Scheduler goroutine panic recovered: %v", r)
+			}
+		}()
 		for {
 			select {
 			case <-shutdownCh:
@@ -54,6 +81,11 @@ func StartWorker() {
 
 	// Start watchers for all active projects
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Watcher restore goroutine panic recovered: %v", r)
+			}
+		}()
 		projects, err := getProjects()
 		if err != nil {
 			log.Printf("Failed to get projects for watcher startup: %v\n", err)
@@ -84,6 +116,11 @@ func StartWorker() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Signal handler goroutine panic recovered: %v", r)
+			}
+		}()
 		sig := <-sigCh
 		log.Printf("Received signal %v, initiating graceful shutdown...\n", sig)
 		close(shutdownCh)
@@ -98,10 +135,23 @@ func StartWorker() {
 			// Triggered by manual scan - process immediately without delay
 			processNextJob()
 		default:
-			processNextJob()
-			time.Sleep(2 * time.Second)
+			// Check if there's a job before sleeping to avoid busy loop
+			hasJob := checkForJobs()
+			if hasJob {
+				processNextJob()
+			} else {
+				// No jobs - sleep longer to avoid CPU waste
+				time.Sleep(5 * time.Second)
+			}
 		}
 	}
+}
+
+// checkForJobs returns true if there are queued or scheduled jobs
+func checkForJobs() bool {
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'scheduled')").Scan(&count)
+	return count > 0
 }
 
 // TriggerWorker signals the worker to process jobs immediately
@@ -118,16 +168,21 @@ func triggerIntegrityScans() {
 	defer cancel()
 
 	// Find projects with integrity scan enabled
-	rows, err := db.QueryContext(ctx, "SELECT id FROM projects WHERE status = 'active' AND integrity_scan_enabled = 1 AND baseline_at > 0")
+	rows, err := db.QueryContext(ctx, "SELECT id, COALESCE(integrity_scan_interval_hours, 24) FROM projects WHERE status = 'active' AND integrity_scan_enabled = 1 AND baseline_at > 0")
 	if err != nil {
+		log.Printf("Failed to query projects for integrity scan: %v", err)
 		return
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var projectID int
-		if err := rows.Scan(&projectID); err != nil {
+		var intervalHours int
+		if err := rows.Scan(&projectID, &intervalHours); err != nil {
 			continue
+		}
+		if intervalHours <= 0 {
+			intervalHours = 24 // Default 24 hours
 		}
 
 		// Check if there's already a running integrity scan
@@ -135,18 +190,39 @@ func triggerIntegrityScans() {
 		db.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE project_id = ? AND type = 'integrity_scan' AND status IN ('queued', 'running')", projectID).Scan(&runningCount)
 
 		if runningCount == 0 {
-			// Queue integrity scan job
-			db.Exec("INSERT INTO jobs (project_id, type, status) VALUES (?, 'integrity_scan', 'queued')", projectID)
-			log.Printf("Queued integrity scan for project %d\n", projectID)
+			// Check if we need to schedule for future or run now
+			var lastScan int64
+			db.QueryRowContext(ctx, "SELECT COALESCE(last_integrity_scan, 0) FROM projects WHERE id = ?", projectID).Scan(&lastScan)
+
+			now := time.Now().Unix()
+			nextScheduled := lastScan + int64(intervalHours*3600)
+
+			if nextScheduled > now {
+				// Schedule for future - insert with scheduled_at
+				db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, 'integrity_scan', 'scheduled', ?)", projectID, nextScheduled)
+				log.Printf("Scheduled integrity scan for project %d at %s\n", projectID, time.Unix(nextScheduled, 0).Format(time.RFC3339))
+			} else {
+				// Run now
+				db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, 'integrity_scan', 'queued', ?)", projectID, now)
+				log.Printf("Queued integrity scan for project %d (overdue)\n", projectID)
+			}
 		}
 	}
 }
 
 func processNextJob() {
 	var job Job
+	now := time.Now().Unix()
 
-	// SQLite-compatible: Try to claim a job atomically
-	// First, get a queued job ID
+	// First, promote any overdue scheduled jobs to queued
+	db.Exec("UPDATE jobs SET status = 'queued' WHERE status = 'scheduled' AND scheduled_at <= ?", now)
+
+	// Lock to prevent race conditions in job claiming
+	workerMutex.Lock()
+	defer workerMutex.Unlock()
+
+	// Atomic job claiming: SELECT + UPDATE in one transaction
+	// This prevents race conditions where multiple workers pick the same job
 	err := db.QueryRow(`
 		SELECT id, project_id, type FROM jobs
 		WHERE status = 'queued'
@@ -154,19 +230,24 @@ func processNextJob() {
 	`).Scan(&job.ID, &job.ProjectID, &job.Type)
 
 	if err != nil {
-		return // No queued jobs available
+		// No queued jobs - this is normal, not an error
+		return
 	}
 
-	// Try to claim it with UPDATE (only if still queued - prevents race)
+	// Try to claim it with UPDATE (only if still queued - atomic claim)
 	result, err := db.Exec("UPDATE jobs SET status = 'running', started_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'queued'", job.ID)
 	if err != nil {
+		log.Printf("Failed to claim job %d: %v", job.ID, err)
 		return
 	}
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
-		return // Another worker already took it
+		// Another worker already took this job - try again
+		return
 	}
+
+	log.Printf("Worker claimed job %d (type: %s) for project %d", job.ID, job.Type, job.ProjectID)
 
 	if job.Type == "initial_baseline" {
 		db.Exec("UPDATE projects SET status = 'counting' WHERE id = ?", job.ProjectID)
@@ -178,11 +259,21 @@ func processNextJob() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	// Use configurable scan timeout (default 2 hours)
+	scanTimeout := time.Duration(cfg.ScanTimeoutHours) * time.Hour
+	if scanTimeout == 0 {
+		scanTimeout = 2 * time.Hour // Fallback to 2 hours
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 
 	// Check for shutdown signal during work
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Shutdown check goroutine panic recovered: %v", r)
+			}
+		}()
 		select {
 		case <-shutdownCh:
 			cancel()
@@ -243,7 +334,7 @@ func processNextJob() {
 	}
 
 	if timedOutCount {
-		failJob(job.ID, p.ID, "scan timeout exceeded 2 hours during quick count")
+		failJob(job.ID, p.ID, fmt.Sprintf("scan timeout exceeded %d hours during quick count", cfg.ScanTimeoutHours))
 		return
 	}
 
@@ -295,9 +386,13 @@ func processNextJob() {
 				return nil
 			}
 
-			// Symlink Guard
+			// Symlink Guard - validate symlinks don't escape watched directory
 			if info.Mode()&os.ModeSymlink != 0 {
-				filesSkipped++
+				// Only skip if symlink points outside watched paths (potential attack)
+				if !isSymlinkSafe(path, append(p.AppPaths, p.FilesPaths...)) {
+					log.Printf("Warning: skipping symlink that escapes watched directory: %s\n", path)
+					filesSkipped++
+				}
 				return nil
 			}
 
@@ -331,13 +426,18 @@ func processNextJob() {
 						filesSkipped++
 						return nil
 					}
+					// Other errors - log but continue
 					filesError++
 					log.Printf("Warning: failed to open %s: %v\n", path, err)
 				} else {
+					defer f.Close() // Ensure file is closed even on panic
 					h := sha256.New()
-					io.Copy(h, f)
+					if _, err := io.Copy(h, f); err != nil {
+						filesError++
+						log.Printf("Warning: failed to hash %s: %v\n", path, err)
+						return nil
+					}
 					hashStr = hex.EncodeToString(h.Sum(nil))
-					f.Close()
 				}
 			}
 
@@ -390,7 +490,7 @@ func processNextJob() {
 	}
 
 	if timedOut {
-		failJob(job.ID, p.ID, "scan timeout exceeded 2 hours, partial data only")
+		failJob(job.ID, p.ID, fmt.Sprintf("scan timeout exceeded %d hours, partial data only", cfg.ScanTimeoutHours))
 		return
 	}
 
@@ -429,10 +529,13 @@ func processNextJob() {
 				if size < 10*1024*1024 {
 					f, err := os.Open(path)
 					if err == nil {
+						defer f.Close() // Ensure file is closed even on panic
 						h := sha256.New()
-						io.Copy(h, f)
-						hashStr = hex.EncodeToString(h.Sum(nil))
-						f.Close()
+						if _, err := io.Copy(h, f); err != nil {
+							log.Printf("Warning: failed to hash %s: %v\n", path, err)
+						} else {
+							hashStr = hex.EncodeToString(h.Sum(nil))
+						}
 					}
 				}
 				filesMutex.Lock()
@@ -467,7 +570,7 @@ func processNextJob() {
 	}
 
 	if timedOut {
-		failJob(job.ID, p.ID, "scan timeout exceeded 2 hours during reconciling")
+		failJob(job.ID, p.ID, fmt.Sprintf("scan timeout exceeded %d hours during reconciling", cfg.ScanTimeoutHours))
 		return
 	}
 
@@ -498,6 +601,33 @@ func processNextJob() {
 				log.Printf("Warning: failed to persist orphan findings for project %d: %v\n", p.ID, err)
 			}
 		}
+	}
+
+	// Write fim_events for integrity scan changes
+	if job.Type == "integrity_scan" {
+		now := time.Now().Unix()
+		for _, f := range modifiedFiles {
+			db.Exec(`
+				INSERT INTO fim_events
+				(project_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name,
+				 actor_details, risk_level, classification, source, details, timestamp)
+				VALUES (?, 'MODIFIED', ?, ?, 'SYSTEM', '', 'integrity_scan',
+				 'baseline comparison', 'HIGH', 'UNKNOWN_SOURCE', 'INTEGRITY_SCAN',
+				 '{"size": ?}', ?)
+			`, p.ID, f.FilePath, f.Hash, f.FileSize, now)
+		}
+		for _, id := range deletedIDs {
+			var filePath string
+			db.QueryRow("SELECT file_path FROM project_files WHERE id = ?", id).Scan(&filePath)
+			db.Exec(`
+				INSERT INTO fim_events
+				(project_id, event_type, file_path, actor_type, actor_id, actor_name,
+				 actor_details, risk_level, classification, source, details, timestamp)
+				VALUES (?, 'DELETED', ?, 'SYSTEM', '', 'integrity_scan',
+				 'baseline comparison', 'MEDIUM', 'DELETED', 'INTEGRITY_SCAN', '{}', ?)
+			`, p.ID, filePath, now)
+		}
+		log.Printf("Integrity scan: %d modified, %d deleted events logged\n", len(modifiedFiles), len(deletedIDs))
 	}
 
 	finalStatus := "active"

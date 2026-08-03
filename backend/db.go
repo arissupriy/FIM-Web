@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
-	"sync"
 
 	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
@@ -15,19 +12,9 @@ import (
 
 var db *sql.DB
 
-// Migration mutex to prevent concurrent migrations
-var migrationMutex sync.Mutex
-
 func initDB() {
 	var err error
-
-	// Ensure directory exists
-	dbDir := filepath.Dir(cfg.DBPath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		log.Fatalf("Failed to create database directory: %v", err)
-	}
-
-	db, err = sql.Open("sqlite", cfg.DBPath)
+	db, err = sql.Open("sqlite", "./database/ojs_monitor.db")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,10 +29,6 @@ func initDB() {
 }
 
 func runMigrations() {
-	// Lock to prevent concurrent migrations from multiple server starts
-	migrationMutex.Lock()
-	defer migrationMutex.Unlock()
-
 	// Create schema_migrations table
 	db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`)
 
@@ -235,133 +218,15 @@ func runMigrations() {
 		currentVersion = 10
 	}
 
-	// Migration v11: Add file_id to fim_events for linking to project_files
+	// [P1-01] Migration v11: Add file permission tracking columns
 	if currentVersion < 11 {
-		db.Exec(`ALTER TABLE fim_events ADD COLUMN file_id INTEGER REFERENCES project_files(id);`)
-
-		// Backfill file_id for existing events
-		db.Exec(`
-			UPDATE fim_events
-			SET file_id = (
-				SELECT pf.id FROM project_files pf
-				WHERE pf.project_id = fim_events.project_id
-				AND pf.file_path = fim_events.file_path
-			)
-			WHERE file_id IS NULL AND file_path IS NOT NULL
-		`)
-
-		db.Exec(`INSERT INTO schema_migrations (version) VALUES (11);`)
-		currentVersion = 11
-	}
-
-	// Migration v12: Add scheduled_at to jobs for scheduled integrity scans
-	if currentVersion < 12 {
-		db.Exec(`ALTER TABLE jobs ADD COLUMN scheduled_at INTEGER;`)
-		db.Exec(`ALTER TABLE projects ADD COLUMN integrity_scan_interval_hours INTEGER DEFAULT 24;`)
-
-		db.Exec(`INSERT INTO schema_migrations (version) VALUES (12);`)
-		currentVersion = 12
-	}
-
-	// Migration v13: Add file permission tracking columns
-	if currentVersion < 13 {
 		db.Exec(`ALTER TABLE project_files ADD COLUMN file_mode TEXT DEFAULT '';`)
 		db.Exec(`ALTER TABLE project_files ADD COLUMN file_uid INTEGER DEFAULT 0;`)
 		db.Exec(`ALTER TABLE project_files ADD COLUMN file_gid INTEGER DEFAULT 0;`)
 		db.Exec(`ALTER TABLE project_files ADD COLUMN permission_changes INTEGER DEFAULT 0;`)
 
-		db.Exec(`INSERT INTO schema_migrations (version) VALUES (13);`)
-		currentVersion = 13
-	}
-
-	// Migration v14: Alert system tables
-	if currentVersion < 14 {
-		// Alert configurations per project and channel
-		db.Exec(`
-			CREATE TABLE IF NOT EXISTS alert_configs (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				project_id INTEGER,
-				channel_type TEXT NOT NULL,
-				config_json TEXT DEFAULT '{}',
-				enabled INTEGER DEFAULT 1,
-				min_risk_level TEXT DEFAULT 'HIGH',
-				created_at INTEGER DEFAULT (strftime('%s', 'now')),
-				updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-				FOREIGN KEY (project_id) REFERENCES projects(id),
-				UNIQUE(project_id, channel_type)
-			);
-		`)
-
-		// Alert history for tracking sent alerts
-		db.Exec(`
-			CREATE TABLE IF NOT EXISTS alert_history (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				project_id INTEGER,
-				event_id INTEGER,
-				channel_type TEXT NOT NULL,
-				status TEXT DEFAULT 'pending',
-				error_message TEXT DEFAULT '',
-				retry_count INTEGER DEFAULT 0,
-				sent_at INTEGER,
-				created_at INTEGER DEFAULT (strftime('%s', 'now')),
-				FOREIGN KEY (project_id) REFERENCES projects(id),
-				FOREIGN KEY (event_id) REFERENCES fim_events(id)
-			);
-		`)
-
-		// Indexes for alert_history
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_alert_history_project ON alert_history(project_id);`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_alert_history_status ON alert_history(status);`)
-		db.Exec(`CREATE INDEX IF NOT EXISTS idx_alert_history_created ON alert_history(created_at);`)
-
-			db.Exec(`INSERT INTO schema_migrations (version) VALUES (14);`)
-		currentVersion = 14
-	}
-
-	// Migration v15: Compliance reports and hash chain
-	if currentVersion < 15 {
-		// Scheduled reports table
-		db.Exec(`
-			CREATE TABLE IF NOT EXISTS scheduled_reports (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				project_id INTEGER,
-				name TEXT NOT NULL,
-				framework TEXT DEFAULT 'soc2',
-				format TEXT DEFAULT 'html',
-				schedule_cron TEXT DEFAULT '0 6 * * 1',
-				recipients TEXT DEFAULT '[]',
-				enabled INTEGER DEFAULT 1,
-				last_run INTEGER,
-				next_run INTEGER,
-				created_at INTEGER DEFAULT (strftime('%s', 'now')),
-				updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-				FOREIGN KEY (project_id) REFERENCES projects(id)
-			);
-		`)
-
-		// Generated reports table
-		db.Exec(`
-			CREATE TABLE IF NOT EXISTS generated_reports (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				report_id INTEGER,
-				project_id INTEGER,
-				file_path TEXT,
-				file_size INTEGER,
-				status TEXT DEFAULT 'pending',
-				error_message TEXT DEFAULT '',
-				generated_at INTEGER,
-				sent_at INTEGER,
-				sent_to TEXT DEFAULT '[]',
-				created_at INTEGER DEFAULT (strftime('%s', 'now'))
-			);
-		`)
-
-		// Add hash chain columns to fim_events
-		db.Exec(`ALTER TABLE fim_events ADD COLUMN prev_event_hash TEXT DEFAULT '';`)
-		db.Exec(`ALTER TABLE fim_events ADD COLUMN event_hash TEXT DEFAULT '';`)
-
-		db.Exec(`INSERT INTO schema_migrations (version) VALUES (15);`)
-		currentVersion = 15
+		db.Exec(`INSERT INTO schema_migrations (version) VALUES (11);`)
+		currentVersion = 11
 	}
 
 	log.Println("Database initialized and migrated successfully.")
@@ -369,9 +234,6 @@ func runMigrations() {
 
 
 func getProjects() ([]Project, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
 	rows, err := db.Query("SELECT id, name, description, template, app_path, files_path, blacklist_exts, whitelist_paths, db_host, db_user, db_pass, db_name, status, COALESCE(baseline_total, 0), COALESCE(baseline_processed, 0), COALESCE(error_message, ''), COALESCE(rescan_interval, 10), COALESCE(baseline_at, 0), COALESCE(watcher_status, 'stopped'), COALESCE(integrity_scan_enabled, 0), COALESCE(last_integrity_scan, 0) FROM projects")
 	if err != nil {
 		return nil, err
@@ -405,9 +267,6 @@ func getProjects() ([]Project, error) {
 }
 
 func getProjectByID(id int) (Project, error) {
-	if db == nil {
-		return Project{}, fmt.Errorf("database not initialized")
-	}
 	projects, err := getProjects()
 	if err != nil {
 		return Project{}, err
@@ -500,13 +359,10 @@ func GetAuditLogs() ([]AuditLog, error) {
 	return logs, nil
 }
 
-// SeedDefaultAdmin creates the default admin if none exists
-// NOTE: On first run, creates admin/admin123. In production, set ADMIN_PASSWORD env
-// and change credentials immediately after first login.
+// SeedDefaultAdmin creates or updates the default admin
 func SeedDefaultAdmin() error {
 	username := "admin"
-	// Get password from env, or use default (CHANGE IN PRODUCTION!)
-	password := getEnv("ADMIN_PASSWORD", "admin123")
+	password := "admin123"
 
 	// Check if admin exists
 	var exists bool
@@ -516,12 +372,22 @@ func SeedDefaultAdmin() error {
 	}
 
 	if exists {
-		// Admin already exists - don't update password every startup
-		// This prevents accidental password reset in production
-		log.Printf("Admin user '%s' already exists\n", username)
+		// Admin exists, verify password is correct by checking
+		// We use a fixed bcrypt cost for consistency
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+		if err != nil {
+			return err
+		}
+
+		// Update the password hash to ensure it's correct
+		_, err = db.Exec("UPDATE admins SET password_hash = ? WHERE username = ?", string(hash), username)
+		if err != nil {
+			log.Printf("Warning: failed to update admin password: %v", err)
+		}
+		log.Println("Admin verified: admin / admin123")
 	} else {
-		// Create new admin with bcrypt cost 12 (secure default)
-		hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+		// Create new admin
+		hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
 		if err != nil {
 			return err
 		}
@@ -529,15 +395,12 @@ func SeedDefaultAdmin() error {
 		if err != nil {
 			return err
 		}
-		log.Printf("Default admin created: %s / (set via ADMIN_PASSWORD env)\n", username)
+		log.Println("Default admin created: admin / admin123")
 	}
 	return nil
 }
 
 func getProjectFiles(projectID int) (map[string]ProjectFile, error) {
-	if db == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
 	rows, err := db.Query("SELECT id, project_id, file_path, hash, file_size, mod_time, status, COALESCE(file_mode, ''), COALESCE(file_uid, 0), COALESCE(file_gid, 0), COALESCE(permission_changes, 0) FROM project_files WHERE project_id=?", projectID)
 	if err != nil {
 		return nil, err
@@ -563,14 +426,16 @@ func batchUpsertProjectFiles(files []ProjectFile) error {
 	if err != nil {
 		return err
 	}
-	stmtInsert, err := tx.Prepare("INSERT OR IGNORE INTO project_files (project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, permission_changes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))")
+	// [P1-06] Include permission fields in INSERT
+	stmtInsert, err := tx.Prepare("INSERT OR IGNORE INTO project_files (project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))")
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 	defer stmtInsert.Close()
 
-	stmtUpdate, err := tx.Prepare("UPDATE project_files SET hash=?, file_size=?, mod_time=?, file_mode=?, file_uid=?, file_gid=?, status=?, updated_at=strftime('%s', 'now') WHERE id=?")
+	// [P1-06] Include permission fields in UPDATE
+	stmtUpdate, err := tx.Prepare("UPDATE project_files SET hash=?, file_size=?, mod_time=?, status=?, file_mode=?, file_uid=?, file_gid=?, updated_at=strftime('%s', 'now') WHERE id=?")
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -582,15 +447,11 @@ func batchUpsertProjectFiles(files []ProjectFile) error {
 		if fileType == "" {
 			fileType = "project"
 		}
-		fileMode := f.FileMode
-		if fileMode == "" {
-			fileMode = ""
-		}
 		if f.ID == 0 {
 			// INSERT OR IGNORE - skip if already exists (handles orphan re-detection)
-			_, err = tx.Stmt(stmtInsert).Exec(f.ProjectID, f.FilePath, f.Hash, f.FileSize, f.ModTime, f.Status, fileType, fileMode, f.FileUID, f.FileGID, f.PermissionChanges)
+			_, err = tx.Stmt(stmtInsert).Exec(f.ProjectID, f.FilePath, f.Hash, f.FileSize, f.ModTime, f.Status, fileType, f.FileMode, f.FileUID, f.FileGID)
 		} else {
-			_, err = stmtUpdate.Exec(f.Hash, f.FileSize, f.ModTime, fileMode, f.FileUID, f.FileGID, f.Status, f.ID)
+			_, err = stmtUpdate.Exec(f.Hash, f.FileSize, f.ModTime, f.Status, f.FileMode, f.FileUID, f.FileGID, f.ID)
 		}
 		if err != nil {
 			tx.Rollback()

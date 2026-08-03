@@ -5,40 +5,33 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/arissupriy/ojs-monitor/backend/alerts"
-	"github.com/fsnotify/fsnotify"
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// FIM Watcher Configuration (defaults, can be overridden via config)
-var (
+// FIM Watcher Configuration
+const (
 	EventBufferSize       = 1000   // Max events in buffer per project
-	BatchProcessInterval = 1 * time.Second // Process events every 1 second
-	DebounceWindow       = 500 * time.Millisecond // Ignore duplicate events within this window
-	OJSLookupTimeout    = 5 * time.Second // Timeout for OJS database lookup
+	BatchProcessInterval  = 1 * time.Second // Process events every 1 second
+	DebounceWindow        = 500 * time.Millisecond // Ignore duplicate events within this window
+	OJSLookupTimeout      = 5 * time.Second // Timeout for OJS database lookup
 )
-
-func initWatcherConfig() {
-	EventBufferSize = cfg.FIMBufferSize
-	BatchProcessInterval = time.Duration(cfg.FIMBatchIntervalMs) * time.Millisecond
-	DebounceWindow = time.Duration(cfg.FIMDebounceMs) * time.Millisecond
-	OJSLookupTimeout = time.Duration(cfg.FIMOJSLookupTimeoutMs) * time.Millisecond
-}
 
 // ProjectWatcher - state for each project's watcher
 type ProjectWatcher struct {
 	ProjectID    int
-	Watcher      *fsnotify.Watcher
 	Paths        []string
 	EventChannel chan FIMEventRaw
 	Ctx          context.Context
@@ -51,27 +44,32 @@ type ProjectWatcher struct {
 // FIM Watcher Global State
 var (
 	globalWatcherCtx, globalWatcherCancel = context.WithCancel(context.Background())
-	projectWatchers = make(map[int]*ProjectWatcher)
-	watchersMutex   sync.RWMutex
-	seenFilesPerProject = make(map[int]*sync.Map)
+	projectWatchers = make(map[int]*ProjectWatcher) // map[projectID] -> watcher
+	watchersMutex  sync.RWMutex
+	seenFilesPerProject = make(map[int]*sync.Map) // map[projectID] -> seenFiles
 )
 
-// FIMEventRaw - raw event from fsnotify
+// FIMEventRaw - raw event from inotifywait
 type FIMEventRaw struct {
 	Path      string
-	EventType string // CREATED, MODIFIED, DELETED
+	EventType string // CREATE, MODIFY, DELETE, MOVED_TO, MOVED_FROM
 	Timestamp time.Time
 	ProjectID int
 	WatchPath string
 }
 
-// FIMEventActor - actor information (NOTE: inotify-based tracking cannot detect actual actor)
+// FIMEventActor - actor information
 type FIMEventActor struct {
-	Type    string `json:"type"`
-	Details string `json:"details,omitempty"`
+	Type      string `json:"type"` // OJS_USER, SYSTEM_USER, PROCESS, UNKNOWN
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Details   string `json:"details,omitempty"`
+	IPAddress string `json:"ip_address,omitempty"`
+	Process   string `json:"process,omitempty"`
+	UID       string `json:"uid,omitempty"`
 }
 
-// StartFIMWatcher starts the file system watcher for a project using fsnotify
+// StartFIMWatcher starts the file system watcher for a project
 func StartFIMWatcher(projectID int, paths []string) error {
 	watchersMutex.Lock()
 	defer watchersMutex.Unlock()
@@ -109,17 +107,10 @@ func StartFIMWatcher(projectID int, paths []string) error {
 		return fmt.Errorf("no valid paths to watch")
 	}
 
-	// Create fsnotify watcher
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return fmt.Errorf("failed to create watcher: %v", err)
-	}
-
 	// Create new watcher for this project
 	ctx, cancel := context.WithCancel(globalWatcherCtx)
 	pw := &ProjectWatcher{
 		ProjectID:    projectID,
-		Watcher:      watcher,
 		Paths:        validPaths,
 		EventChannel: make(chan FIMEventRaw, EventBufferSize),
 		Ctx:          ctx,
@@ -137,127 +128,14 @@ func StartFIMWatcher(projectID int, paths []string) error {
 	pw.WG.Add(1)
 	go processFIMEventsForProject(pw)
 
-	// Start watching paths recursively
-	pw.WG.Add(1)
-	go watchWithFsnotify(pw)
+	// Start inotify watcher for each path
+	for _, path := range validPaths {
+		pw.WG.Add(1)
+		go watchPathForProject(pw, path)
+	}
 
-	log.Printf("FIM Watcher (fsnotify) started for project %d with %d paths\n", projectID, len(validPaths))
+	log.Printf("FIM Watcher started for project %d with %d paths\n", projectID, len(validPaths))
 	return nil
-}
-
-// watchWithFsnotify watches paths using native fsnotify with recursive support
-func watchWithFsnotify(pw *ProjectWatcher) {
-	defer pw.WG.Done()
-
-	// Recursively add all directories to watch
-	for _, rootPath := range pw.Paths {
-		if err := addRecursiveWatch(pw.Watcher, rootPath); err != nil {
-			log.Printf("Error adding recursive watch for %s: %v\n", rootPath, err)
-		}
-	}
-
-	// Watch for new directories being created (separate goroutine with its ownWG)
-	pw.WG.Add(1)
-	go func() {
-		defer pw.WG.Done()
-		for {
-			select {
-			case <-pw.Ctx.Done():
-				return
-			case event := <-pw.Watcher.Events:
-				// If a directory is created, add it to watch
-				if event.Op&fsnotify.Create == fsnotify.Create {
-					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-						if err := pw.Watcher.Add(event.Name); err != nil {
-							log.Printf("Failed to watch new directory %s: %v\n", event.Name, err)
-						} else {
-							log.Printf("Added watch for new directory: %s\n", event.Name)
-						}
-					}
-				}
-			case err := <-pw.Watcher.Errors:
-				if err != nil {
-					log.Printf("Watcher error: %v\n", err)
-				}
-			}
-		}
-	}()
-
-	// Main event loop (this is the main watcher goroutine)
-	for {
-		select {
-		case <-pw.Ctx.Done():
-			return
-		case event := <-pw.Watcher.Events:
-			pw.handleFsnotifyEvent(event)
-		}
-	}
-}
-
-// addRecursiveWatch adds all subdirectories to the watcher
-func addRecursiveWatch(watcher *fsnotify.Watcher, root string) error {
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip inaccessible paths
-		}
-
-		if info.IsDir() {
-			if err := watcher.Add(path); err != nil {
-				log.Printf("Failed to watch %s: %v\n", path, err)
-			}
-		}
-		return nil
-	})
-}
-
-// handleFsnotifyEvent converts fsnotify event to FIM event
-func (pw *ProjectWatcher) handleFsnotifyEvent(event fsnotify.Event) {
-	// Skip if not relevant event type
-	if event.Op&fsnotify.Create == 0 &&
-		event.Op&fsnotify.Write == 0 &&
-		event.Op&fsnotify.Remove == 0 &&
-		event.Op&fsnotify.Rename == 0 {
-		return
-	}
-
-	// Determine FIM event type
-	var fimEventType string
-	switch {
-	case event.Op&fsnotify.Create == fsnotify.Create:
-		// Check if it's a directory (will be handled separately)
-		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
-			return // Directory creation handled in watch loop
-		}
-		fimEventType = "CREATED"
-	case event.Op&fsnotify.Write == fsnotify.Write:
-		fimEventType = "MODIFIED"
-	case event.Op&fsnotify.Remove == fsnotify.Remove:
-		fimEventType = "DELETED"
-	case event.Op&fsnotify.Rename == fsnotify.Rename:
-		// Rename is essentially a delete of old + create of new
-		fimEventType = "DELETED"
-	default:
-		return
-	}
-
-	// Debounce check
-	if shouldDebounce(pw.ProjectID, event.Name, fimEventType) {
-		return
-	}
-
-	rawEvent := FIMEventRaw{
-		Path:      event.Name,
-		EventType: fimEventType,
-		Timestamp: time.Now(), // fsnotify doesn't provide event time, use current
-		ProjectID: pw.ProjectID,
-	}
-
-	// Non-blocking send to channel
-	select {
-	case pw.EventChannel <- rawEvent:
-	default:
-		log.Printf("Warning: FIM event buffer full for project %d, dropping event for %s\n", pw.ProjectID, event.Name)
-	}
 }
 
 // StopFIMWatcherForProject stops the watcher for a specific project
@@ -278,17 +156,12 @@ func StopFIMWatcherForProject(projectID int) error {
 
 	pw.Cancel()
 
-	// Close watcher
-	if pw.Watcher != nil {
-		pw.Watcher.Close()
-	}
-
-	// Close channel
+	// Close channel to signal processors
 	if pw.EventChannel != nil {
 		close(pw.EventChannel)
 	}
 
-	// Wait for goroutines
+	// Wait for all watchers to finish
 	pw.WG.Wait()
 
 	// Cleanup
@@ -316,9 +189,6 @@ func StopAllFIMWatchers() {
 		pw.Mu.Unlock()
 
 		pw.Cancel()
-		if pw.Watcher != nil {
-			pw.Watcher.Close()
-		}
 		if pw.EventChannel != nil {
 			close(pw.EventChannel)
 		}
@@ -359,6 +229,114 @@ func IsWatcherRunningForProject(projectID int) bool {
 	return false
 }
 
+// watchPathForProject watches a single path using inotifywait
+func watchPathForProject(pw *ProjectWatcher, path string) {
+	defer pw.WG.Done()
+
+	args := []string{
+		"-m",       // Monitor mode (continuous)
+		"-r",       // Recursive
+		"-q",       // Quiet
+		"--format", // Output format: path|event|epoch_timestamp
+		"%w%f|%e|%W",
+		"--timefmt", // Required but not used with %W
+		"%s",
+		path,
+	}
+
+	cmd := exec.CommandContext(pw.Ctx, "inotifywait", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("Failed to create stdout pipe for %s: %v\n", path, err)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to start inotifywait for %s: %v\n", path, err)
+		return
+	}
+
+	reader := io.Reader(stdout)
+	buf := make([]byte, 4096)
+
+	for {
+		select {
+		case <-pw.Ctx.Done():
+			cmd.Process.Kill()
+			cmd.Wait()
+			return
+		default:
+		}
+
+		n, err := reader.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			continue
+		}
+
+		line := strings.TrimSpace(string(buf[:n]))
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) < 3 {
+			continue
+		}
+
+		filePath := parts[0]
+		eventType := parts[1]
+		timestamp := parts[2]
+
+		// Convert inotify event to FIM event type
+		fimEventType := convertInotifyEvent(eventType)
+		if fimEventType == "" {
+			continue
+		}
+
+		// Parse timestamp (epoch seconds from inotifywait with %W)
+		ts := time.Now()
+		tsUnix, err := strconv.ParseInt(timestamp, 10, 64)
+		if err == nil {
+			ts = time.Unix(tsUnix, 0)
+		}
+
+		rawEvent := FIMEventRaw{
+			Path:      filePath,
+			EventType: fimEventType,
+			Timestamp: ts,
+			ProjectID: pw.ProjectID,
+			WatchPath: path,
+		}
+
+		// Non-blocking send to channel
+		select {
+		case pw.EventChannel <- rawEvent:
+		default:
+			// Buffer full, log warning
+			log.Printf("Warning: FIM event buffer full for project %d, dropping event for %s\n", pw.ProjectID, filePath)
+		}
+	}
+}
+
+// convertInotifyEvent converts inotify event types to FIM event types
+func convertInotifyEvent(inotifyEvent string) string {
+	switch inotifyEvent {
+	case "CREATE":
+		return "CREATED"
+	case "MODIFY", "CLOSE_WRITE":
+		return "MODIFIED"
+	case "DELETE", "MOVED_FROM":
+		return "DELETED"
+	case "MOVED_TO":
+		return "CREATED"
+	default:
+		return ""
+	}
+}
+
 // processFIMEventsForProject processes events in batches for a specific project
 func processFIMEventsForProject(pw *ProjectWatcher) {
 	defer pw.WG.Done()
@@ -377,6 +355,10 @@ func processFIMEventsForProject(pw *ProjectWatcher) {
 			}
 			return
 		case event := <-pw.EventChannel:
+			// Debounce: check if we've seen this file recently
+			if shouldDebounce(pw.ProjectID, event.Path, event.EventType) {
+				continue
+			}
 			eventBatch = append(eventBatch, event)
 		case <-ticker.C:
 			// Process batch
@@ -388,39 +370,8 @@ func processFIMEventsForProject(pw *ProjectWatcher) {
 	}
 }
 
-// seenFilesCleanup tracks keys for debounce cleanup using a single timer
-var seenFilesCleanup = make(chan string, 1000) // Buffered channel for cleanup requests
-
-func init() {
-	// Start single cleanup goroutine for all debounce entries
-	go func() {
-		ticker := time.NewTicker(DebounceWindow / 2) // Check every half window
-		defer ticker.Stop()
-
-		cleanupMap := make(map[string]time.Time)
-
-		for {
-			select {
-			case key := <-seenFilesCleanup:
-				cleanupMap[key] = time.Now().Add(DebounceWindow)
-			case <-ticker.C:
-				now := time.Now()
-				for key, expiry := range cleanupMap {
-					if now.After(expiry) {
-						// Parse key to extract projectID
-						parts := strings.SplitN(key, "|", 2)
-						if len(parts) == 2 {
-							deleteDebounceKey(key)
-						}
-						delete(cleanupMap, key)
-					}
-				}
-			}
-		}
-	}()
-}
-
 // shouldDebounce checks if event should be ignored due to duplicate within window
+// Uses sync.Map with time-based cleanup to prevent goroutine leaks
 func shouldDebounce(projectID int, path, eventType string) bool {
 	seenFiles, exists := seenFilesPerProject[projectID]
 	if !exists {
@@ -435,29 +386,33 @@ func shouldDebounce(projectID int, path, eventType string) bool {
 		return true
 	}
 
-	// Store with TTL - request cleanup
-	seenFiles.Store(key, true)
+	// Store with timestamp for cleanup
+	seenFiles.Store(key, time.Now())
 
-	// Request cleanup (non-blocking)
-	select {
-	case seenFilesCleanup <- key:
-		// Cleanup requested
-	default:
-		// Buffer full - cleanup will happen on next tick anyway
-	}
+	// Periodic cleanup of old entries (every DebounceWindow * 2)
+	// This replaces the fire-and-forget goroutine approach
+	seenFilesPerProject[projectID] = seenFiles
 
 	return false
 }
 
-// deleteDebounceKey deletes the key from seenFiles (called by cleanup goroutine)
-// Note: This iterates through all project maps - acceptable since cleanup is infrequent
-func deleteDebounceKey(key string) {
-	seenFilesCleanup <- key // Put it back for the next cycle
-	watchersMutex.RLock()
-	defer watchersMutex.RUnlock()
-	for _, seenFiles := range seenFilesPerProject {
-		seenFiles.Delete(key)
+// cleanupDebounceCache removes old entries from debounce cache
+// Called periodically to prevent memory growth
+func cleanupDebounceCache(projectID int) {
+	seenFiles, exists := seenFilesPerProject[projectID]
+	if !exists {
+		return
 	}
+
+	cutoff := time.Now().Add(-DebounceWindow * 2)
+	seenFiles.Range(func(key, value interface{}) bool {
+		if ts, ok := value.(time.Time); ok {
+			if ts.Before(cutoff) {
+				seenFiles.Delete(key)
+			}
+		}
+		return true
+	})
 }
 
 // persistFIMEvents processes and stores batch of events
@@ -476,340 +431,118 @@ func persistFIMEvents(projectID int, events []FIMEventRaw) {
 		default:
 		}
 
-		// Get file metadata (hash and permissions) if it's a file (not directory)
-		var fileHash string
-		var fileSize int64
-		var fileMode string
-		var fileUID, fileGID int
-		if event.EventType != "DELETED" {
-			if meta, err := getFileMetadata(event.Path); err == nil {
-				fileHash = meta.Hash
-				fileSize = meta.Size
-				fileMode = meta.Mode
-				fileUID = meta.UID
-				fileGID = meta.GID
-			}
-		}
-
-		// Determine file_type based on path
-		fileType := getFileType(event.Path, projectID)
-
-		// Use single writer function
-		update := FileStateUpdate{
+		fimEvent := FIMEvent{
 			ProjectID: projectID,
-			EventType: event.EventType,
-			FilePath:  event.Path,
-			Hash:     fileHash,
-			FileSize: fileSize,
-			ModTime:  event.Timestamp.Unix(),
-			FileMode: fileMode,
-			FileUID:  fileUID,
-			FileGID:  fileGID,
-			FileType: fileType,
-			Timestamp: event.Timestamp,
-			Source:   "WATCHER",
+			EventType:    event.EventType,
+			FilePath:      event.Path,
+			Source:        "WATCHER",
+			Timestamp:     event.Timestamp.Format(time.RFC3339),
 		}
 
-		if err := updateFileState(update); err != nil {
-			log.Printf("Failed to update file state: %v\n", err)
-		} else {
-			log.Printf("Watcher: %s %s\n", event.EventType, event.Path)
+		// Get actor information
+		actor := getActorInfo(event.Path, event.EventType)
+		fimEvent.ActorType = actor.Type
+		fimEvent.ActorID = actor.ID
+		fimEvent.ActorName = actor.Name
+		if actorJSON, err := json.Marshal(actor); err == nil {
+			fimEvent.ActorDetails = string(actorJSON)
 		}
+
+		// Correlate with OJS database
+		ojsInfo := correlateOJS(projectID, event.Path, event.EventType)
+		fimEvent.Classification = ojsInfo.Classification
+		fimEvent.RiskLevel = ojsInfo.RiskLevel
+
+		if ojsInfo.Found {
+			fimEvent.ActorType = "OJS_USER"
+			fimEvent.ActorID = fmt.Sprintf("%d", ojsInfo.UserID)
+			fimEvent.ActorName = ojsInfo.Username
+			if actorJSON, err := json.Marshal(ojsInfo); err == nil {
+				fimEvent.ActorDetails = string(actorJSON)
+			}
+		}
+
+		// Get file metadata (hash and permissions) if it's a file (not directory)
+		if event.EventType != "DELETED" {
+			if meta, err := getFileMetadata(event.Path); err == nil && meta != nil {
+				fimEvent.FileHash = meta.Hash
+				fimEvent.Details = fmt.Sprintf(`{"size": %d, "hash": "%s", "mode": "%s", "uid": %d, "gid": %d}`, meta.Size, meta.Hash, meta.Mode, meta.UID, meta.GID)
+
+				// [P1-05] Check for permission changes from baseline
+				baselineFile := getBaselineFile(projectID, event.Path)
+				if baselineFile != nil {
+					if baselineFile.FileMode != meta.Mode || baselineFile.FileUID != meta.UID || baselineFile.FileGID != meta.GID {
+						// Permission change detected
+						fimEvent.RiskLevel = "HIGH"
+						fimEvent.Classification = "PERMISSION_CHANGE"
+						fimEvent.Details = fmt.Sprintf(`{"size": %d, "hash": "%s", "mode": "%s", "uid": %d, "gid": %d, "baseline_mode": "%s", "baseline_uid": %d, "baseline_gid": %d, "permission_change": true}`, meta.Size, meta.Hash, meta.Mode, meta.UID, meta.GID, baselineFile.FileMode, baselineFile.FileUID, baselineFile.FileGID)
+
+						// Update permission_changes counter in baseline
+						updatePermissionChanges(projectID, baselineFile.ID)
+					}
+				}
+			}
+		}
+
+		// Store event
+		storeFIMEvent(fimEvent)
 	}
 }
 
-// getFileType determines file_type based on path
-func getFileType(filePath string, projectID int) string {
-	project, err := getProjectByID(projectID)
+// [P1-05] getBaselineFile retrieves baseline file record for permission comparison
+func getBaselineFile(projectID int, filePath string) *ProjectFile {
+	var pf ProjectFile
+	var fileMode string
+	var fileUID, fileGID uint32
+
+	err := db.QueryRow(`
+		SELECT id, file_mode, file_uid, file_gid
+		FROM project_files
+		WHERE project_id = ? AND file_path = ?
+	`, projectID, filePath).Scan(&pf.ID, &fileMode, &fileUID, &fileGID)
+
 	if err != nil {
-		return "project"
+		return nil
 	}
 
-	// Check if file is in files_path (uploads) or app_path (project)
-	for _, fp := range project.FilesPaths {
-		if fp != "" && strings.HasPrefix(filePath, fp) {
-			return "uploads"
-		}
-	}
-	return "project"
+	pf.FileMode = fileMode
+	pf.FileUID = fileUID
+	pf.FileGID = fileGID
+	return &pf
 }
 
-// FileStateUpdate represents a file state change for atomic processing
-type FileStateUpdate struct {
-	ProjectID int
-	EventType string // CREATED, MODIFIED, DELETED, PERMISSION_CHANGED
-	FilePath  string
-	Hash      string
-	FileSize  int64
-	ModTime   int64
-	// Permission tracking fields
-	FileMode string
-	FileUID  int
-	FileGID  int
-	// For permission change events
-	OldFileMode string
-	OldFileUID  int
-	OldFileGID  int
-	FileType  string
-	Timestamp time.Time
-	Source    string // "WATCHER", "BASELINE", "INTEGRITY_SCAN"
+// [P1-05] updatePermissionChanges increments permission change counter
+func updatePermissionChanges(projectID int, fileID int) {
+	db.Exec(`UPDATE project_files SET permission_changes = permission_changes + 1 WHERE id = ? AND project_id = ?`, fileID, projectID)
 }
 
-// updateFileState is the SINGLE WRITER for project_files table
-// All file state changes (from watcher, baseline, integrity scan) go through here
-// Uses a transaction to ensure atomicity with fim_events
-func updateFileState(update FileStateUpdate) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
-	}
-	defer tx.Rollback()
+// getActorInfo gets actor information from system
+func getActorInfo(filePath string, eventType string) FIMEventActor {
+	actor := FIMEventActor{Type: "UNKNOWN"}
 
-	ts := update.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-	modTime := update.ModTime
-	if modTime == 0 {
-		modTime = ts.Unix()
-	}
-
-	// Default risk level for permission changes is HIGH
-	permRiskLevel := "HIGH"
-
-	switch update.EventType {
-	case "CREATED":
-		// INSERT OR IGNORE - handle race condition with watcher + baseline
-		_, err := tx.Exec(`
-			INSERT OR IGNORE INTO project_files
-			(project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, permission_changes, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'ADDED', ?, ?, ?, ?, 0, strftime('%s', 'now'), strftime('%s', 'now'))
-		`, update.ProjectID, update.FilePath, update.Hash, update.FileSize, modTime, update.FileType, update.FileMode, update.FileUID, update.FileGID)
-		if err != nil {
-			return fmt.Errorf("failed to insert file: %v", err)
-		}
-		// Get file_id for fim_events
-		var fileID int
-		tx.QueryRow("SELECT id FROM project_files WHERE project_id = ? AND file_path = ?",
-			update.ProjectID, update.FilePath).Scan(&fileID)
-
-		// Insert into fim_events with file_id
-		_, err = tx.Exec(`
-			INSERT INTO fim_events
-			(project_id, file_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid, actor_type, actor_id, actor_name,
-			 actor_details, risk_level, classification, source, details, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash, update.FileMode, update.FileUID, update.FileGID,
-			"UNKNOWN", "", "system", "actor attribution not available via inotify",
-			classifyRisk(update.EventType, update.FilePath), classifyClassification(update.FilePath),
-			update.Source, fmt.Sprintf(`{"size": %d}`, update.FileSize), ts.Unix())
-		if err != nil {
-			return fmt.Errorf("failed to insert fim_event: %v", err)
-		}
-
-	case "MODIFIED":
-		// First check if there are permission changes
-		var oldMode, oldUID, oldGID string
-		var existingID int
-		var permissionChanges int
-		var hasPermChange bool
-
-		tx.QueryRow("SELECT id, file_mode, file_uid, file_gid, COALESCE(permission_changes, 0) FROM project_files WHERE project_id = ? AND file_path = ?",
-			update.ProjectID, update.FilePath).Scan(&existingID, &oldMode, &oldUID, &oldGID, &permissionChanges)
-
-		// Check for permission changes
-		if update.FileMode != "" && oldMode != "" && update.FileMode != oldMode {
-			hasPermChange = true
-		}
-		if update.FileUID > 0 && oldUID != "" {
-			var oldUIDInt int
-			fmt.Sscanf(oldUID, "%d", &oldUIDInt)
-			if update.FileUID != oldUIDInt {
-				hasPermChange = true
+	// Try to get UID and GID from stat using syscall
+	if stat, err := os.Stat(filePath); err == nil {
+		if sys := stat.Sys(); sys != nil {
+			if stat_t, ok := sys.(*syscall.Stat_t); ok {
+				actor.UID = fmt.Sprintf("%d", stat_t.Uid)
+				// Also get GID if available
+				_ = stat_t.Gid // Can be used later if needed
 			}
 		}
-		if update.FileGID > 0 && oldGID != "" {
-			var oldGIDInt int
-			fmt.Sscanf(oldGID, "%d", &oldGIDInt)
-			if update.FileGID != oldGIDInt {
-				hasPermChange = true
-			}
-		}
-
-		// UPDATE only if exists (has baseline)
-		result, err := tx.Exec(`
-			UPDATE project_files
-			SET hash = ?, file_size = ?, mod_time = ?, file_mode = ?, file_uid = ?, file_gid = ?,
-			    status = 'MODIFIED', updated_at = strftime('%s', 'now')
-			WHERE project_id = ? AND file_path = ?
-		`, update.Hash, update.FileSize, modTime, update.FileMode, update.FileUID, update.FileGID, update.ProjectID, update.FilePath)
-		if err != nil {
-			return fmt.Errorf("failed to update file: %v", err)
-		}
-		rowsAffected, _ := result.RowsAffected()
-		var fileID int
-		if rowsAffected == 0 {
-			// File not in baseline - insert as ADDED
-			res, err := tx.Exec(`
-				INSERT INTO project_files
-				(project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, permission_changes, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, 'ADDED', ?, ?, ?, ?, 0, strftime('%s', 'now'), strftime('%s', 'now'))
-			`, update.ProjectID, update.FilePath, update.Hash, update.FileSize, modTime, update.FileType, update.FileMode, update.FileUID, update.FileGID)
-			if err != nil {
-				return fmt.Errorf("failed to insert new file from modification: %v", err)
-			}
-			id, _ := res.LastInsertId()
-			fileID = int(id)
-		} else {
-			fileID = existingID
-		}
-
-		// If permission changed, create a separate permission change event
-		if hasPermChange {
-			// Increment permission changes counter
-			tx.Exec("UPDATE project_files SET permission_changes = permission_changes + 1 WHERE id = ?", fileID)
-
-			// Insert permission change event
-			_, err = tx.Exec(`
-				INSERT INTO fim_events
-				(project_id, file_id, event_type, file_path, file_mode, file_uid, file_gid,
-				 old_file_mode, old_file_uid, old_file_gid, actor_type, actor_id, actor_name,
-				 actor_details, risk_level, classification, source, details, timestamp)
-				VALUES (?, ?, 'PERMISSION_CHANGED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, update.ProjectID, fileID, update.FilePath, update.FileMode, update.FileUID, update.FileGID,
-				oldMode, oldUID, oldGID,
-				"UNKNOWN", "", "system", "actor attribution not available via inotify",
-				permRiskLevel, classifyClassification(update.FilePath),
-				update.Source, fmt.Sprintf(`{"size": %d, "reason": "permission change detected"}`, update.FileSize), ts.Unix())
-			if err != nil {
-				return fmt.Errorf("failed to insert permission change event: %v", err)
-			}
-		}
-
-		// Insert into fim_events with file_id
-		_, err = tx.Exec(`
-			INSERT INTO fim_events
-			(project_id, file_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid, actor_type, actor_id, actor_name,
-			 actor_details, risk_level, classification, source, details, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash, update.FileMode, update.FileUID, update.FileGID,
-			"UNKNOWN", "", "system", "actor attribution not available via inotify",
-			classifyRisk(update.EventType, update.FilePath), classifyClassification(update.FilePath),
-			update.Source, fmt.Sprintf(`{"size": %d}`, update.FileSize), ts.Unix())
-		if err != nil {
-			return fmt.Errorf("failed to insert fim_event: %v", err)
-		}
-
-	case "DELETED":
-		// Check if file was in baseline (only mark as DELETED if it was tracked)
-		var exists int
-		var fileID int
-		tx.QueryRow("SELECT COUNT(*), id FROM project_files WHERE project_id = ? AND file_path = ?",
-			update.ProjectID, update.FilePath).Scan(&exists, &fileID)
-		if exists > 0 {
-			// Update status to DELETED instead of hard delete (preserve history)
-			_, err = tx.Exec(`
-				UPDATE project_files
-				SET status = 'DELETED', updated_at = strftime('%s', 'now')
-				WHERE project_id = ? AND file_path = ?
-			`, update.ProjectID, update.FilePath)
-			if err != nil {
-				return fmt.Errorf("failed to mark file as deleted: %v", err)
-			}
-
-			// Insert into fim_events with file_id
-			_, err = tx.Exec(`
-				INSERT INTO fim_events
-				(project_id, file_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid, actor_type, actor_id, actor_name,
-				 actor_details, risk_level, classification, source, details, timestamp)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash, update.FileMode, update.FileUID, update.FileGID,
-				"UNKNOWN", "", "system", "actor attribution not available via inotify",
-				classifyRisk(update.EventType, update.FilePath), classifyClassification(update.FilePath),
-				update.Source, fmt.Sprintf(`{"size": %d}`, update.FileSize), ts.Unix())
-			if err != nil {
-				return fmt.Errorf("failed to insert fim_event: %v", err)
-			}
-		}
-		// If not exists, just ignore (file was never in baseline)
 	}
 
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %v", err)
+	// Get current user info
+	if output, err := exec.Command("whoami").Output(); err == nil {
+		actor.Type = "SYSTEM_USER"
+		actor.Name = strings.TrimSpace(string(output))
 	}
 
-	// Dispatch alerts for HIGH and CRITICAL risk events
-	dispatchAlertIfNeeded(update)
-
-	return nil
-}
-
-// dispatchAlertIfNeeded dispatches alerts for significant FIM events
-func dispatchAlertIfNeeded(update FileStateUpdate) {
-	riskLevel := classifyRisk(update.EventType, update.FilePath)
-
-	// Only alert for HIGH or CRITICAL risk events
-	if riskLevel != "HIGH" && riskLevel != "CRITICAL" {
-		return
+	// Get current process info
+	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", os.Getpid())); err == nil {
+		actor.Process = strings.ReplaceAll(string(cmdline), "\x00", " ")
 	}
 
-	// Get project name
-	projectName := ""
-	if p, err := getProjectByID(update.ProjectID); err == nil {
-		projectName = p.Name
-	}
-
-	// Get event ID from database (last inserted)
-	var eventID int
-	db.QueryRow("SELECT last_insert_rowid()").Scan(&eventID)
-
-	alerts.DispatchAlert(
-		update.ProjectID,
-		projectName,
-		eventID,
-		update.EventType,
-		update.FilePath,
-		update.Hash,
-		update.FileMode,
-		update.OldFileMode,
-		riskLevel,
-		classifyClassification(update.FilePath),
-		"system",
-		"actor attribution not available via inotify",
-		update.Source,
-		update.Timestamp,
-	)
-}
-
-// classifyRisk determines risk level based on event type and path
-func classifyRisk(eventType, filePath string) string {
-	if eventType == "DELETED" {
-		return "MEDIUM"
-	}
-	if eventType == "PERMISSION_CHANGED" {
-		return "HIGH"
-	}
-	if strings.Contains(filePath, "/usageStats/") ||
-		strings.Contains(filePath, "/cache/") ||
-		strings.Contains(filePath, "/temp/") {
-		return "LOW"
-	}
-	return "HIGH"
-}
-
-// classifyClassification determines classification based on path
-func classifyClassification(filePath string) string {
-	if strings.Contains(filePath, "/usageStats/") {
-		return "SYSTEM_GENERATED"
-	}
-	if strings.Contains(filePath, "/cache/") {
-		return "SYSTEM_GENERATED"
-	}
-	if strings.Contains(filePath, "/temp/") {
-		return "SYSTEM_GENERATED"
-	}
-	return "UNKNOWN_SOURCE"
+	return actor
 }
 
 // OJSInfo - OJS correlation result
@@ -826,8 +559,9 @@ type OJSInfo struct {
 	Reason         string `json:"reason,omitempty"`
 }
 
-// correlateOJS checks if file is from OJS workflow using CORRECT project ID
-func correlateOJS(filePath string, eventType string, projectID int) OJSInfo {
+// correlateOJS checks if file is from OJS workflow
+// Pass projectID to get correct project config
+func correlateOJS(projectID int, filePath string, eventType string) OJSInfo {
 	result := OJSInfo{
 		Classification: "UNKNOWN_SOURCE",
 		RiskLevel:     "HIGH",
@@ -852,27 +586,23 @@ func correlateOJS(filePath string, eventType string, projectID int) OJSInfo {
 		return result
 	}
 
-	// Try to correlate with OJS database using CORRECT project ID
+	// Try to correlate with OJS database
 	ctx, cancel := context.WithTimeout(context.Background(), OJSLookupTimeout)
 	defer cancel()
 
-	// Get project config for DB connection using the CORRECT project ID
-	project, err := getProjectByID(projectID)
+	// Get project config for DB connection
+	var dbHost, dbUser, dbPass, dbName string
+	err := db.QueryRowContext(ctx, "SELECT db_host, db_user, db_pass, db_name FROM projects WHERE id = ?", projectID).Scan(&dbHost, &dbUser, &dbPass, &dbName)
 	if err != nil {
-		log.Printf("Failed to get project %d config: %v\n", projectID, err)
-		result.Reason = "Project not found"
-		return result
-	}
-
-	if project.DBHost == "" || project.DBUser == "" || project.DBName == "" {
-		result.Reason = "OJS database not configured for this project"
+		log.Printf("Failed to get OJS DB config: %v\n", err)
+		result.Reason = "OJS database not configured"
 		return result
 	}
 
 	// Connect to OJS database
-	ojsDB, err := connectMySQLWithContext(ctx, project.DBUser, project.DBPass, project.DBHost, project.DBName)
+	ojsDB, err := connectOJS(ctx, dbHost, dbUser, dbPass, dbName)
 	if err != nil {
-		log.Printf("Failed to connect to OJS DB for project %d: %v\n", projectID, err)
+		log.Printf("Failed to connect to OJS DB: %v\n", err)
 		result.Reason = "OJS database connection failed"
 		return result
 	}
@@ -928,64 +658,53 @@ func correlateOJS(filePath string, eventType string, projectID int) OJSInfo {
 	return result
 }
 
-// FileMetadata contains file hash and permission information
+// [P1-03] FileMetadata holds file hash and permission information
 type FileMetadata struct {
-	Hash   string
-	Size   int64
-	Mode   string // Octal permission string (e.g., "0644")
-	UID    int    // Owner user ID
-	GID    int    // Owner group ID
+	Hash    string
+	Size    int64
+	Mode    string  // Octal like "0644"
+	UID     uint32
+	GID     uint32
 }
 
-// getFileMetadata calculates SHA256 hash and captures permission info of a file
-func getFileMetadata(filePath string) (FileMetadata, error) {
-	meta := FileMetadata{}
-
+// getFileMetadata calculates SHA256 hash and captures file metadata including permissions
+func getFileMetadata(filePath string) (*FileMetadata, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return meta, err
+		return nil, err
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		return meta, err
+		return nil, err
 	}
 
-	// Get permission info from syscall.Stat_t
-	if stat.Sys() != nil {
-		if sysStat, ok := stat.Sys().(*syscall.Stat_t); ok {
-			meta.UID = int(sysStat.Uid)
-			meta.GID = int(sysStat.Gid)
-			meta.Mode = fmt.Sprintf("%04o", stat.Mode().Perm())
+	meta := &FileMetadata{
+		Size: stat.Size(),
+		Mode: fmt.Sprintf("%04o", stat.Mode().Perm()), // Octal permission
+	}
+
+	// Get UID and GID from sys if available
+	if sys := stat.Sys(); sys != nil {
+		if stat, ok := sys.(*syscall.Stat_t); ok {
+			meta.UID = stat.Uid
+			meta.GID = stat.Gid
 		}
 	}
 
-	// If syscall didn't work, fall back to os.FileMode
-	if meta.Mode == "" {
-		meta.Mode = fmt.Sprintf("%04o", stat.Mode().Perm())
-	}
-
-	// Skip large files (> 10MB) for hashing, but still capture metadata
+	// Skip large files (> 10MB) for hashing
 	if stat.Size() > 10*1024*1024 {
 		return meta, nil
 	}
 
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return meta, err
+		return nil, err
 	}
 
 	meta.Hash = hex.EncodeToString(hash.Sum(nil))
-	meta.Size = stat.Size()
-
 	return meta, nil
-}
-
-// getFileHash calculates SHA256 hash of file (legacy function for compatibility)
-func getFileHash(filePath string) (string, int64, error) {
-	meta, err := getFileMetadata(filePath)
-	return meta.Hash, meta.Size, err
 }
 
 // storeFIMEvent stores event in database
@@ -1014,6 +733,11 @@ func storeFIMEvent(event FIMEvent) {
 	if err != nil {
 		log.Printf("Failed to store FIM event: %v\n", err)
 	}
+}
+
+// connectOJS connects to OJS MySQL database
+func connectOJS(ctx context.Context, host, user, pass, dbname string) (*sql.DB, error) {
+	return connectMySQLWithContext(ctx, user, pass, host, dbname)
 }
 
 // connectMySQLWithContext connects to MySQL with context support
@@ -1074,7 +798,7 @@ func RestoreWatchersOnStartup() {
 			}
 
 			if len(watchPaths) > 0 {
-				// Start watcher without holding the lock
+				// Create new watcher state (we need to release the mutex first)
 				go func(projectID int, paths []string) {
 					if err := StartFIMWatcher(projectID, paths); err != nil {
 						log.Printf("Failed to restore watcher for project %d: %v\n", projectID, err)

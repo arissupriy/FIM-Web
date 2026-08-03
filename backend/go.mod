@@ -1,9 +1,8 @@
-module github.com/arissupriy/ojs-monitor/backend
+module ojs-monitor/backend
 
 go 1.26.5
 
 require (
-	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-chi/cors v1.2.2
 	github.com/go-sql-driver/mysql v1.10.0

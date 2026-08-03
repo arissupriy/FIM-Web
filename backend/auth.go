@@ -9,9 +9,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// jwtSecret is loaded from JWT_SECRET env variable.
-// IMPORTANT: Must be set in production! Default is insecure.
-var jwtSecret = []byte(getEnv("JWT_SECRET", "INSECURE-DEV-ONLY-CHANGE-ME"))
+var jwtSecret = []byte("super-secret-ojs-monitor-key")
 
 // GenerateToken creates a new JWT token for a given admin ID.
 func GenerateToken(adminID int, username string) (string, error) {
@@ -50,13 +48,7 @@ func AuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Safe type assertion for admin_id (prevents panic on malformed token)
-		adminIDFloat, ok := claims["admin_id"].(float64)
-		if !ok {
-			respondError(w, http.StatusUnauthorized, "Invalid token claims: admin_id missing or wrong type")
-			return
-		}
-		adminID := int(adminIDFloat)
+		adminID := int(claims["admin_id"].(float64))
 		ctx := context.WithValue(r.Context(), "admin_id", adminID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

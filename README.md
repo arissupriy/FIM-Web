@@ -340,3 +340,63 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Support
 
 For issues and feature requests, please open an issue on GitHub.
+
+## Build Output
+
+Binary backend **wajib** bernama:
+
+```
+fim-server
+```
+
+Lokasi output:
+
+```
+backend/fim-server
+```
+
+Selalu gunakan:
+
+```bash
+cd backend
+go build -o fim-server .
+```
+
+atau dari repository root:
+
+```bash
+go build -o backend/fim-server ./backend
+```
+
+Jangan:
+
+- mengubah nama binary
+- membuat binary dengan nama lain
+- membuat binary di luar `backend/`
+- membuat artifact build di luar repository
+
+Setelah perubahan pada kode backend, pastikan binary `backend/fim-server` berhasil dibangun sebelum pekerjaan dianggap selesai.
+
+---
+
+# Definition of Done
+
+Sebuah task backend dianggap selesai hanya jika seluruh syarat berikut terpenuhi:
+
+- Perubahan bersifat minimal dan modular.
+- Tidak ada file `.go` yang melebihi 200 baris.
+- Setiap business logic baru memiliki unit test.
+- Regression test ditambahkan untuk setiap bug yang diperbaiki.
+- Seluruh test yang relevan lulus.
+- Backend berhasil dibangun menjadi binary:
+
+```
+backend/fim-server
+```
+
+- Tidak ada warning atau error build yang diketahui.
+- Tidak ada perubahan di luar workspace:
+
+```
+/home/arissupriy/stai/ojs-monitor
+```

@@ -80,4 +80,5 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-*.pid
+backend/*.pid
+frontend/*.pid

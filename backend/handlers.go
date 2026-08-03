@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,22 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arissupriy/ojs-monitor/backend/alerts"
-	"github.com/arissupriy/ojs-monitor/backend/alerts/channels"
-	"github.com/arissupriy/ojs-monitor/backend/reports"
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 )
-
-// escapeLike escapes special characters in LIKE patterns to prevent SQL injection
-func escapeLike(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "%", "\\%")
-	s = strings.ReplaceAll(s, "_", "\\_")
-	return s
-}
 
 func testDBConnection(p Project) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -86,22 +74,15 @@ func handleGetProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create context with timeout for metrics queries
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.DBQueryTimeoutSecs)*time.Second)
-	defer cancel()
-
 	var res []ProjectResponse
 	for _, p := range projects {
 		p.Configured = p.IsConfigured()
 		pr := ProjectResponse{Project: p}
 		if p.Status == "active" || p.Status == "completed_with_warnings" || p.Status == "error" {
-			metrics, err := FastAuditProject(ctx, p)
+			metrics, err := FastAuditProject(context.Background(), p)
 			if err == nil {
 				metrics.Status = p.Status
 				pr.Metrics = &metrics
-			} else {
-				// Log error but don't fail the entire request
-				log.Printf("Warning: failed to get metrics for project %d: %v", p.ID, err)
 			}
 		}
 		res = append(res, pr)
@@ -169,12 +150,7 @@ func handleAddProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.ID = id
-	adminIDVal := r.Context().Value("admin_id")
-	adminID, ok := adminIDVal.(int)
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "Invalid session")
-		return
-	}
+	adminID := r.Context().Value("admin_id").(int)
 	LogActivity(adminID, "ADD_PROJECT", p.Name)
 
 	respondJSON(w, http.StatusCreated, p)
@@ -205,12 +181,7 @@ func handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	adminIDVal := r.Context().Value("admin_id")
-	adminID, ok := adminIDVal.(int)
-	if !ok {
-		respondError(w, http.StatusUnauthorized, "Invalid session")
-		return
-	}
+	adminID := r.Context().Value("admin_id").(int)
 	LogActivity(adminID, "UPDATE_PROJECT", p.Name)
 
 	respondJSON(w, http.StatusOK, p)
@@ -263,14 +234,9 @@ func handleAuditProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch cached or fast metrics with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.DBQueryTimeoutSecs)*time.Second)
-	defer cancel()
-
-	metrics, err := FastAuditProject(ctx, *targetProject)
+	// Fetch cached or fast metrics
+	metrics, err := FastAuditProject(context.Background(), *targetProject)
 	if err != nil {
-		// Return partial data instead of error
-		log.Printf("Warning: failed to get audit metrics for project %d: %v", targetProject.ID, err)
 		respondJSON(w, http.StatusOK, DashboardMetrics{
 			Status:            targetProject.Status,
 			BaselineTotal:     targetProject.BaselineTotal,
@@ -299,11 +265,8 @@ func handleGetProjectDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get OJS details with timeout
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.DBQueryTimeoutSecs)*time.Second)
-	defer cancel()
-
-	details, err := getOJSDetails(ctx, p)
+	// Get OJS details
+	details, err := getOJSDetails(context.Background(), p)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to get OJS details: "+err.Error())
 		return
@@ -390,79 +353,6 @@ func handleStartScan(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleForceScan cancels existing jobs and starts a new scan immediately
-func handleForceScan(w http.ResponseWriter, r *http.Request) {
-	idStr := chi.URLParam(r, "id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	p, err := getProjectByID(id)
-	if err != nil {
-		respondError(w, http.StatusNotFound, "Project not found")
-		return
-	}
-
-	// Validate paths
-	for _, ap := range p.AppPaths {
-		if ap != "" {
-			if _, err := os.Stat(ap); os.IsNotExist(err) {
-				respondError(w, http.StatusBadRequest, fmt.Sprintf("App path not found: %s", ap))
-				return
-			}
-		}
-	}
-	for _, fp := range p.FilesPaths {
-		if fp != "" {
-			if _, err := os.Stat(fp); os.IsNotExist(err) {
-				respondError(w, http.StatusBadRequest, fmt.Sprintf("Uploads path not found: %s", fp))
-				return
-			}
-		}
-	}
-
-	// Validate DB connection
-	if err := testDBConnection(p); err != nil {
-		respondError(w, http.StatusBadRequest, "Database connection failed: "+err.Error())
-		return
-	}
-
-	// Cancel all existing queued/scheduled jobs for this project
-	db.Exec("UPDATE jobs SET status = 'cancelled' WHERE project_id = ? AND status IN ('queued', 'running', 'scheduled')", id)
-
-	// Determine job type
-	var jobType string
-	if p.BaselineAt > 0 {
-		jobType = "integrity_scan"
-	} else {
-		jobType = "initial_baseline"
-	}
-
-	// Insert new job as queued (will run immediately via worker)
-	now := time.Now().Unix()
-	_, err = db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, ?, 'queued', ?)", id, jobType, now)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to queue job: "+err.Error())
-		return
-	}
-
-	// Update project status
-	if jobType == "initial_baseline" {
-		db.Exec("UPDATE projects SET status='pending_baseline' WHERE id=?", id)
-	}
-
-	// Trigger worker immediately
-	TriggerWorker()
-
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"message": fmt.Sprintf("Force scan started: %s", jobType),
-		"job_type": jobType,
-	})
-}
-
 // handleResetBaseline resets the baseline and starts fresh
 func handleResetBaseline(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -477,19 +367,20 @@ func handleResetBaseline(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "Project not found")
 		return
 	}
-	_ = p // used for potential future validation
 
-	// Cancel any stuck jobs first
-	db.Exec("UPDATE jobs SET status = 'cancelled' WHERE project_id = ? AND status IN ('queued', 'running')", id)
+	// Check if scan is in progress
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status IN ('queued', 'running')", p.ID).Scan(&count)
+	if count > 0 {
+		respondError(w, http.StatusConflict, "A scan is already in progress. Please wait.")
+		return
+	}
 
-	// Clear existing files (start fresh)
+	// Clear existing files (but keep history)
 	db.Exec("DELETE FROM project_files WHERE project_id = ?", id)
 
-	// Keep FIM events for forensic history, but clear file_id references
-	db.Exec("UPDATE fim_events SET file_id = NULL WHERE project_id = ?", id)
-
 	// Reset baseline timestamp
-	db.Exec("UPDATE projects SET baseline_at = 0, baseline_total = 0, baseline_processed = 0, watcher_status = 'stopped' WHERE id = ?", id)
+	db.Exec("UPDATE projects SET baseline_at = 0, baseline_total = 0, baseline_processed = 0 WHERE id = ?", id)
 
 	// Queue new baseline job
 	_, err = db.Exec("INSERT INTO jobs (project_id, type, status) VALUES (?, 'initial_baseline', 'queued')", id)
@@ -508,7 +399,6 @@ func handleResetBaseline(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStartIntegrityScan starts a manual integrity scan
-// Mode: "now" (force immediate) or "later" (schedule for next interval)
 func handleStartIntegrityScan(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	id, err := strconv.Atoi(idStr)
@@ -528,51 +418,15 @@ func handleStartIntegrityScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse mode from query/body (default: "now")
-	mode := "now"
-	if r.URL.Query().Get("mode") == "later" {
-		mode = "later"
-	}
-
-	// Check if scan is already in progress (only for "now" mode)
-	if mode == "now" {
-		var count int
-		db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status IN ('queued', 'running')", p.ID).Scan(&count)
-		if count > 0 {
-			respondError(w, http.StatusConflict, "A scan is already in progress or queued")
-			return
-		}
-	}
-
-	now := time.Now().Unix()
-
-	if mode == "later" {
-		// Schedule for next interval
-		intervalHours := 24
-		if p.IntegrityScanEnabled == 1 {
-			db.QueryRow("SELECT COALESCE(integrity_scan_interval_hours, 24) FROM projects WHERE id = ?", id).Scan(&intervalHours)
-		}
-		nextScheduled := now + int64(intervalHours*3600)
-
-		// Check if already scheduled
-		var existingCount int
-		db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND type = 'integrity_scan' AND status = 'scheduled'", id).Scan(&existingCount)
-		if existingCount > 0 {
-			respondError(w, http.StatusConflict, "An integrity scan is already scheduled")
-			return
-		}
-
-		db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, 'integrity_scan', 'scheduled', ?)", id, nextScheduled)
-		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"message": fmt.Sprintf("Integrity scan scheduled for %s", time.Unix(nextScheduled, 0).Format("Jan 2, 15:04")),
-			"scheduled_at": nextScheduled,
-		})
+	// Check if scan is in progress
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status IN ('queued', 'running')", p.ID).Scan(&count)
+	if count > 0 {
+		respondError(w, http.StatusConflict, "A scan is already in progress or queued for this project")
 		return
 	}
 
-	// Force run now
-	_, err = db.Exec("INSERT INTO jobs (project_id, type, status, scheduled_at) VALUES (?, 'integrity_scan', 'queued', ?)", id, now)
+	_, err = db.Exec("INSERT INTO jobs (project_id, type, status) VALUES (?, 'integrity_scan', 'queued')", id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to queue job: "+err.Error())
 		return
@@ -609,18 +463,7 @@ func handleGetProjectJobs(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "Invalid project ID")
 		return
 	}
-
-	// Get jobs (exclude cancelled)
-	rows, err := db.Query(`
-		SELECT id, type, status, error_message,
-		       COALESCE(scheduled_at, 0) as scheduled_at,
-		       created_at,
-		       COALESCE(finished_at, '') as finished_at
-		FROM jobs
-		WHERE project_id = ? AND status != 'cancelled'
-		ORDER BY COALESCE(scheduled_at, 0) DESC, id DESC
-		LIMIT 100
-	`, id)
+	rows, err := db.Query("SELECT id, type, status, error_message, created_at, COALESCE(finished_at, '') FROM jobs WHERE project_id = ? ORDER BY id DESC LIMIT 50", id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -631,25 +474,15 @@ func handleGetProjectJobs(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var jID int
 		var jType, jStatus, jErr, jCreated, jFinished string
-		var jScheduledAt int64
-		rows.Scan(&jID, &jType, &jStatus, &jErr, &jScheduledAt, &jCreated, &jFinished)
+		rows.Scan(&jID, &jType, &jStatus, &jErr, &jCreated, &jFinished)
 		jobs = append(jobs, map[string]interface{}{
-			"id": jID,
-			"type": jType,
-			"status": jStatus,
-			"error": jErr,
-			"scheduled_at": jScheduledAt,
-			"created_at": jCreated,
-			"finished_at": jFinished,
+			"id": jID, "type": jType, "status": jStatus, "error": jErr, "created_at": jCreated, "updated_at": jFinished,
 		})
 	}
 	if jobs == nil {
 		jobs = []map[string]interface{}{}
 	}
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"data": jobs,
-	})
+	respondJSON(w, http.StatusOK, jobs)
 }
 
 func handleGetProjectFiles(w http.ResponseWriter, r *http.Request) {
@@ -672,7 +505,7 @@ func handleGetProjectFiles(w http.ResponseWriter, r *http.Request) {
 		var fPath, fHash, fStatus, fCreated string
 		rows.Scan(&fID, &fPath, &fHash, &fStatus, &fCreated)
 		files = append(files, map[string]interface{}{
-			"id": fID, "file_path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
+			"id": fID, "path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
 		})
 	}
 	if files == nil {
@@ -714,7 +547,7 @@ func handleGetProjectFilesPaginated(w http.ResponseWriter, r *http.Request) {
 
 	if search != "" {
 		baseConditions += " AND file_path LIKE ?"
-		searchPattern := "%" + escapeLike(search) + "%"
+		searchPattern := "%" + search + "%"
 		args = append(args, searchPattern)
 		countArgs = append(countArgs, searchPattern)
 	}
@@ -785,7 +618,7 @@ func handleGetProjectFilesPaginated(w http.ResponseWriter, r *http.Request) {
 		rows.Scan(&fID, &fPath, &fHash, &fStatus, &fModTime, &fCreated, &fUpdated, &fFileType)
 
 		files = append(files, map[string]interface{}{
-			"id": fID, "file_path": fPath, "hash": fHash, "status": fStatus,
+			"id": fID, "path": fPath, "hash": fHash, "status": fStatus,
 			"file_type": fFileType,
 			"mod_time": time.Unix(fModTime, 0).Format(time.RFC3339),
 			"created_at": time.Unix(fCreated, 0).Format(time.RFC3339),
@@ -832,7 +665,7 @@ func handleGetOrphanFiles(w http.ResponseWriter, r *http.Request) {
 	if search != "" {
 		query += " AND file_path LIKE ?"
 		countQuery += " AND file_path LIKE ?"
-		searchPattern := "%" + escapeLike(search) + "%" // Escape special chars to prevent LIKE injection
+		searchPattern := "%" + search + "%"
 		args = append(args, searchPattern)
 		countArgs = append(countArgs, searchPattern)
 	}
@@ -858,7 +691,7 @@ func handleGetOrphanFiles(w http.ResponseWriter, r *http.Request) {
 		var fPath, fHash, fStatus, fCreated string
 		rows.Scan(&fID, &fPath, &fHash, &fStatus, &fCreated)
 		files = append(files, map[string]interface{}{
-			"id": fID, "file_path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
+			"id": fID, "path": fPath, "hash": fHash, "status": fStatus, "created_at": fCreated,
 		})
 	}
 	if files == nil {
@@ -948,7 +781,7 @@ func handleGetFileDetail(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"file": map[string]interface{}{
 			"id": fID,
-			"file_path": fPath,
+			"path": fPath,
 			"hash": fHash,
 			"status": fStatus,
 			"file_type": fileType,
@@ -1183,9 +1016,6 @@ func handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// NOTE: Currently all authenticated admins can cancel any job.
-	// If multi-tenant support is needed, add project ownership check here.
-
 	// Check job status - only allow cancelling queued jobs
 	var currentStatus string
 	var projectID int
@@ -1201,39 +1031,28 @@ func handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete the queued job
-	result, err := db.Exec("DELETE FROM jobs WHERE id = ? AND status = 'queued'", jobID)
+	_, err = db.Exec("DELETE FROM jobs WHERE id = ? AND status = 'queued'", jobID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to cancel job: "+err.Error())
-		return
-	}
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		respondError(w, http.StatusNotFound, "Job not found or already cancelled")
 		return
 	}
 
 	// Check if there are any remaining queued jobs for this project
 	var remainingQueued int
-	if err := db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'queued'", projectID).Scan(&remainingQueued); err != nil {
-		log.Printf("Warning: failed to check remaining queued jobs: %v", err)
-	}
+	db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'queued'", projectID).Scan(&remainingQueued)
 
 	// If no more queued jobs, revert project status back
 	if remainingQueued == 0 {
 		// Check if there's a running job
 		var runningCount int
-		if err := db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'running'", projectID).Scan(&runningCount); err != nil {
-			log.Printf("Warning: failed to check running jobs: %v", err)
-		}
+		db.QueryRow("SELECT COUNT(*) FROM jobs WHERE project_id = ? AND status = 'running'", projectID).Scan(&runningCount)
 
 		if runningCount == 0 {
 			// No running job either, set status back based on configuration
 			var p Project
-			if err := db.QueryRow("SELECT id, name, description, template, app_path, files_path, db_host, db_user, db_name FROM projects WHERE id = ?", projectID).Scan(
+			db.QueryRow("SELECT id, name, description, template, app_path, files_path, db_host, db_user, db_name FROM projects WHERE id = ?", projectID).Scan(
 				&p.ID, &p.Name, &p.Description, &p.Template, new(string), new(string), &p.DBHost, &p.DBUser, &p.DBName,
-			); err != nil {
-				log.Printf("Warning: failed to get project for status revert: %v", err)
-			}
+			)
 
 			// Get current project status
 			var currentProjectStatus string
@@ -1304,7 +1123,7 @@ func handleGetFIMEvents(w http.ResponseWriter, r *http.Request) {
 	var total int
 	db.QueryRow(countQuery, countArgs...).Scan(&total)
 
-	query := "SELECT id, project_id, COALESCE(file_id, 0), event_type, file_path, file_hash, actor_type, actor_id, actor_name, actor_details, risk_level, classification, source, details, alert_sent, datetime(timestamp, 'unixepoch'), datetime(created_at, 'unixepoch') FROM fim_events " + baseConditions + " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+	query := "SELECT id, project_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name, actor_details, risk_level, classification, source, details, alert_sent, datetime(timestamp, 'unixepoch'), datetime(created_at, 'unixepoch') FROM fim_events " + baseConditions + " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := db.Query(query, args...)
@@ -1320,11 +1139,7 @@ func handleGetFIMEvents(w http.ResponseWriter, r *http.Request) {
 		var actorID, actorName, actorDetails, details sql.NullString
 		var alertSentInt int
 		var timestamp, createdAt sql.NullString
-		var fileID int
-		rows.Scan(&e.ID, &e.ProjectID, &fileID, &e.EventType, &e.FilePath, &e.FileHash, &e.ActorType, &actorID, &actorName, &actorDetails, &e.RiskLevel, &e.Classification, &e.Source, &details, &alertSentInt, &timestamp, &createdAt)
-		if fileID > 0 {
-			e.FileID = &fileID
-		}
+		rows.Scan(&e.ID, &e.ProjectID, &e.EventType, &e.FilePath, &e.FileHash, &e.ActorType, &actorID, &actorName, &actorDetails, &e.RiskLevel, &e.Classification, &e.Source, &details, &alertSentInt, &timestamp, &createdAt)
 
 		if actorID.Valid {
 			e.ActorID = actorID.String
@@ -1503,539 +1318,5 @@ func handleGetFIMWatcherStatus(w http.ResponseWriter, r *http.Request) {
 				"stopped": !isRunning,
 			},
 		},
-	})
-}
-
-// ============================================
-// Alert Configuration Handlers
-// ============================================
-
-// AlertConfigRequest represents an alert configuration request
-type AlertConfigRequest struct {
-	ChannelType  string `json:"channel_type"`
-	Config       map[string]interface{} `json:"config"`
-	Enabled      bool   `json:"enabled"`
-	MinRiskLevel string `json:"min_risk_level"`
-}
-
-// handleGetAlertConfigs returns all alert configurations for a project
-func handleGetAlertConfigs(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	rows, err := db.Query(`
-		SELECT id, project_id, channel_type, config_json, enabled, min_risk_level, created_at, updated_at
-		FROM alert_configs WHERE project_id = ?
-	`, projectID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to query alert configs: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
-	var configs []map[string]interface{}
-	for rows.Next() {
-		var id, projectID int
-		var channelType, configJSON, minRiskLevel string
-		var enabled bool
-		var createdAt, updatedAt int
-
-		if err := rows.Scan(&id, &projectID, &channelType, &configJSON, &enabled, &minRiskLevel, &createdAt, &updatedAt); err != nil {
-			continue
-		}
-
-		var config map[string]interface{}
-		json.Unmarshal([]byte(configJSON), &config)
-
-		configs = append(configs, map[string]interface{}{
-			"id":           id,
-			"project_id":   projectID,
-			"channel_type": channelType,
-			"config":       config,
-			"enabled":      enabled,
-			"min_risk_level": minRiskLevel,
-			"created_at":   createdAt,
-			"updated_at":   updatedAt,
-		})
-	}
-
-	respondJSON(w, http.StatusOK, configs)
-}
-
-// handleSetAlertConfig creates or updates an alert configuration
-func handleSetAlertConfig(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	var req AlertConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-
-	// Validate channel type
-	validChannels := map[string]bool{"email": true, "slack": true, "webhook": true}
-	if !validChannels[req.ChannelType] {
-		respondError(w, http.StatusBadRequest, "Invalid channel type. Must be: email, slack, or webhook")
-		return
-	}
-
-	// Set default risk level
-	minRiskLevel := req.MinRiskLevel
-	if minRiskLevel == "" {
-		minRiskLevel = "HIGH"
-	}
-
-	// Convert config to JSON
-	configJSON, err := json.Marshal(req.Config)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid config: "+err.Error())
-		return
-	}
-
-	// Upsert configuration
-	_, err = db.Exec(`
-		INSERT INTO alert_configs (project_id, channel_type, config_json, enabled, min_risk_level, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
-		ON CONFLICT(project_id, channel_type) DO UPDATE SET
-			config_json = excluded.config_json,
-			enabled = excluded.enabled,
-			min_risk_level = excluded.min_risk_level,
-			updated_at = strftime('%s', 'now')
-	`, projectID, req.ChannelType, string(configJSON), req.Enabled, minRiskLevel)
-
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to save alert config: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"message": fmt.Sprintf("Alert config for %s updated", req.ChannelType),
-	})
-}
-
-// handleDeleteAlertConfig deletes an alert configuration
-func handleDeleteAlertConfig(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	channelType := r.URL.Query().Get("channel_type")
-	if channelType == "" {
-		respondError(w, http.StatusBadRequest, "channel_type is required")
-		return
-	}
-
-	result, err := db.Exec(`DELETE FROM alert_configs WHERE project_id = ? AND channel_type = ?`, projectID, channelType)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to delete alert config: "+err.Error())
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": rowsAffected > 0,
-		"message": fmt.Sprintf("Alert config for %s deleted", channelType),
-	})
-}
-
-// handleTestAlertConfig tests an alert configuration
-func handleTestAlertConfig(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	var req AlertConfigRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-
-	// Get project name
-	project, _ := getProjectByID(projectID)
-
-	// Create test alert
-	testAlert := alerts.Alert{
-		ProjectID:     projectID,
-		ProjectName:   project.Name,
-		EventType:    "TEST",
-		FilePath:     "/test/path/test.php",
-		FileHash:     "da39a3ee5e6b4b0d3255bfef95601890afd80709",
-		FileMode:     "0644",
-		RiskLevel:    "HIGH",
-		Classification: "TEST",
-		ActorName:    "test_user",
-		Source:       "TEST_ALERT",
-		Timestamp:    time.Now(),
-	}
-
-	// Convert to JSON
-	alertJSON, _ := json.Marshal(testAlert)
-	configJSON, _ := json.Marshal(req.Config)
-
-	// Send test alert based on channel type
-	var sendErr error
-	switch req.ChannelType {
-	case "email":
-		channel := channels.NewEmailChannel()
-		sendErr = channel.Send(string(alertJSON), string(configJSON))
-	case "slack":
-		channel := channels.NewSlackChannel()
-		sendErr = channel.Send(string(alertJSON), string(configJSON))
-	case "webhook":
-		channel := channels.NewWebhookChannel()
-		sendErr = channel.Send(string(alertJSON), string(configJSON))
-	default:
-		respondError(w, http.StatusBadRequest, "Invalid channel type")
-		return
-	}
-
-	if sendErr != nil {
-		respondJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"message": fmt.Sprintf("Test alert failed: %s", sendErr.Error()),
-		})
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"message": fmt.Sprintf("Test alert sent via %s", req.ChannelType),
-	})
-}
-
-// handleGetAlertHistory returns alert history for a project
-func handleGetAlertHistory(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	limit := 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
-			limit = parsed
-		}
-	}
-
-	rows, err := db.Query(`
-		SELECT ah.id, ah.project_id, ah.event_id, ah.channel_type, ah.status,
-			   ah.error_message, ah.retry_count, ah.sent_at, ah.created_at,
-			   COALESCE(fe.event_type, '') as event_type, COALESCE(fe.file_path, '') as file_path
-		FROM alert_history ah
-		LEFT JOIN fim_events fe ON fe.id = ah.event_id
-		WHERE ah.project_id = ?
-		ORDER BY ah.created_at DESC
-		LIMIT ?
-	`, projectID, limit)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to query alert history: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
-	var history []map[string]interface{}
-	for rows.Next() {
-		var id, projectID, eventID, retryCount int
-		var channelType, status, errorMessage, eventType, filePath string
-		var sentAt, createdAt sql.NullInt64
-
-		if err := rows.Scan(&id, &projectID, &eventID, &channelType, &status, &errorMessage, &retryCount, &sentAt, &createdAt, &eventType, &filePath); err != nil {
-			continue
-		}
-
-		history = append(history, map[string]interface{}{
-			"id":            id,
-			"project_id":    projectID,
-			"event_id":      eventID,
-			"channel_type":  channelType,
-			"status":        status,
-			"error_message": errorMessage,
-			"retry_count":   retryCount,
-			"sent_at":       sentAt.Int64,
-			"created_at":    createdAt.Int64,
-			"event_type":    eventType,
-			"file_path":     filePath,
-		})
-	}
-
-	respondJSON(w, http.StatusOK, history)
-}
-
-// handleAcknowledgeAlert acknowledges an alert (marks as read/processed)
-func handleAcknowledgeAlert(w http.ResponseWriter, r *http.Request) {
-	alertIDStr := chi.URLParam(r, "alertId")
-	alertID, err := strconv.Atoi(alertIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid alert ID")
-		return
-	}
-
-	result, err := db.Exec(`UPDATE alert_history SET status = 'acknowledged' WHERE id = ?`, alertID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to acknowledge alert: "+err.Error())
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": rowsAffected > 0,
-		"message": "Alert acknowledged",
-	})
-}
-
-// ============================================
-// Report Handlers
-// ============================================
-
-// handleGetReports returns all scheduled reports for a project
-func handleGetReports(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	rows, err := db.Query(`
-		SELECT id, project_id, name, framework, format, schedule_cron, recipients, enabled, last_run, next_run, created_at
-		FROM scheduled_reports WHERE project_id = ?
-	`, projectID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to query reports: "+err.Error())
-		return
-	}
-	defer rows.Close()
-
-	var reportList []map[string]interface{}
-	for rows.Next() {
-		var id, projectID int
-		var name, framework, format, scheduleCron, recipientsJSON string
-		var enabled bool
-		var lastRun, nextRun, createdAt sql.NullInt64
-
-		if err := rows.Scan(&id, &projectID, &name, &framework, &format, &scheduleCron, &recipientsJSON, &enabled, &lastRun, &nextRun, &createdAt); err != nil {
-			continue
-		}
-
-		var recipients []string
-		json.Unmarshal([]byte(recipientsJSON), &recipients)
-
-		reportList = append(reportList, map[string]interface{}{
-			"id":            id,
-			"project_id":     projectID,
-			"name":           name,
-			"framework":      framework,
-			"format":         format,
-			"schedule_cron":  scheduleCron,
-			"recipients":     recipients,
-			"enabled":        enabled,
-			"last_run":       lastRun.Int64,
-			"next_run":       nextRun.Int64,
-			"created_at":     createdAt.Int64,
-		})
-	}
-
-	respondJSON(w, http.StatusOK, reportList)
-}
-
-// handleCreateReport creates a new scheduled report
-func handleCreateReport(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	var req struct {
-		Name         string   `json:"name"`
-		Framework    string   `json:"framework"`
-		Format       string   `json:"format"`
-		ScheduleCron string   `json:"schedule_cron"`
-		Recipients   []string `json:"recipients"`
-		Enabled     bool     `json:"enabled"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-
-	// Set defaults
-	if req.Framework == "" {
-		req.Framework = "soc2"
-	}
-	if req.Format == "" {
-		req.Format = "html"
-	}
-	if req.ScheduleCron == "" {
-		req.ScheduleCron = "0 6 * * 1" // Weekly on Monday at 6 AM
-	}
-
-	recipientsJSON, _ := json.Marshal(req.Recipients)
-
-	result, err := db.Exec(`
-		INSERT INTO scheduled_reports (project_id, name, framework, format, schedule_cron, recipients, enabled)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, projectID, req.Name, req.Framework, req.Format, req.ScheduleCron, string(recipientsJSON), req.Enabled)
-
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to create report: "+err.Error())
-		return
-	}
-
-	id, _ := result.LastInsertId()
-	respondJSON(w, http.StatusCreated, map[string]interface{}{
-		"id":      id,
-		"success": true,
-		"message": "Report scheduled successfully",
-	})
-}
-
-// handleGenerateReport generates a compliance report
-func handleGenerateReport(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	var req struct {
-		Framework  string `json:"framework"`
-		Format     string `json:"format"`
-		PeriodDays int    `json:"period_days"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
-		return
-	}
-
-	// Set defaults
-	if req.Framework == "" {
-		req.Framework = "soc2"
-	}
-	if req.Format == "" {
-		req.Format = "json"
-	}
-	if req.PeriodDays <= 0 {
-		req.PeriodDays = 30 // Default 30 days
-	}
-
-	// Generate report
-	generator := reports.NewReportGenerator(db)
-	reportData, err := generator.GenerateFIMReport(projectID, reports.ReportType(req.Framework), req.PeriodDays)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to generate report: "+err.Error())
-		return
-	}
-
-	// Export based on format
-	var result string
-	contentType := "application/json"
-
-	switch req.Format {
-	case "csv":
-		result = generator.ExportToCSV(reportData)
-		contentType = "text/csv"
-	case "json":
-		result, err = generator.ExportToJSON(reportData)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "Failed to generate JSON: "+err.Error())
-			return
-		}
-		contentType = "application/json"
-	default:
-		// For HTML, return the data structure
-		jsonData, _ := json.Marshal(reportData)
-		result = string(jsonData)
-	}
-
-	w.Header().Set("Content-Type", contentType)
-	w.Write([]byte(result))
-}
-
-// handleVerifyIntegrity verifies the audit trail integrity
-func handleVerifyIntegrity(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	generator := reports.NewReportGenerator(db)
-	valid, errors, err := generator.VerifyEventChain(projectID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to verify integrity: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"valid":       valid,
-		"errors":      errors,
-		"verified_at": time.Now().Unix(),
-	})
-}
-
-// handleUpdateHashChain updates the hash chain for a project
-func handleUpdateHashChain(w http.ResponseWriter, r *http.Request) {
-	projectIDStr := chi.URLParam(r, "id")
-	projectID, err := strconv.Atoi(projectIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid project ID")
-		return
-	}
-
-	generator := reports.NewReportGenerator(db)
-	if err := generator.UpdateEventHashes(projectID); err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to update hash chain: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"message": "Hash chain updated successfully",
-	})
-}
-
-// handleDeleteReport deletes a scheduled report
-func handleDeleteReport(w http.ResponseWriter, r *http.Request) {
-	reportIDStr := chi.URLParam(r, "reportId")
-	reportID, err := strconv.Atoi(reportIDStr)
-	if err != nil {
-		respondError(w, http.StatusBadRequest, "Invalid report ID")
-		return
-	}
-
-	result, err := db.Exec(`DELETE FROM scheduled_reports WHERE id = ?`, reportID)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "Failed to delete report: "+err.Error())
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"success": rowsAffected > 0,
-		"message": "Report deleted",
 	})
 }

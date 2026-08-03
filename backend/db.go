@@ -263,6 +263,107 @@ func runMigrations() {
 		currentVersion = 12
 	}
 
+	// Migration v13: Add file permission tracking columns
+	if currentVersion < 13 {
+		db.Exec(`ALTER TABLE project_files ADD COLUMN file_mode TEXT DEFAULT '';`)
+		db.Exec(`ALTER TABLE project_files ADD COLUMN file_uid INTEGER DEFAULT 0;`)
+		db.Exec(`ALTER TABLE project_files ADD COLUMN file_gid INTEGER DEFAULT 0;`)
+		db.Exec(`ALTER TABLE project_files ADD COLUMN permission_changes INTEGER DEFAULT 0;`)
+
+		db.Exec(`INSERT INTO schema_migrations (version) VALUES (13);`)
+		currentVersion = 13
+	}
+
+	// Migration v14: Alert system tables
+	if currentVersion < 14 {
+		// Alert configurations per project and channel
+		db.Exec(`
+			CREATE TABLE IF NOT EXISTS alert_configs (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				project_id INTEGER,
+				channel_type TEXT NOT NULL,
+				config_json TEXT DEFAULT '{}',
+				enabled INTEGER DEFAULT 1,
+				min_risk_level TEXT DEFAULT 'HIGH',
+				created_at INTEGER DEFAULT (strftime('%s', 'now')),
+				updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+				FOREIGN KEY (project_id) REFERENCES projects(id),
+				UNIQUE(project_id, channel_type)
+			);
+		`)
+
+		// Alert history for tracking sent alerts
+		db.Exec(`
+			CREATE TABLE IF NOT EXISTS alert_history (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				project_id INTEGER,
+				event_id INTEGER,
+				channel_type TEXT NOT NULL,
+				status TEXT DEFAULT 'pending',
+				error_message TEXT DEFAULT '',
+				retry_count INTEGER DEFAULT 0,
+				sent_at INTEGER,
+				created_at INTEGER DEFAULT (strftime('%s', 'now')),
+				FOREIGN KEY (project_id) REFERENCES projects(id),
+				FOREIGN KEY (event_id) REFERENCES fim_events(id)
+			);
+		`)
+
+		// Indexes for alert_history
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_alert_history_project ON alert_history(project_id);`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_alert_history_status ON alert_history(status);`)
+		db.Exec(`CREATE INDEX IF NOT EXISTS idx_alert_history_created ON alert_history(created_at);`)
+
+			db.Exec(`INSERT INTO schema_migrations (version) VALUES (14);`)
+		currentVersion = 14
+	}
+
+	// Migration v15: Compliance reports and hash chain
+	if currentVersion < 15 {
+		// Scheduled reports table
+		db.Exec(`
+			CREATE TABLE IF NOT EXISTS scheduled_reports (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				project_id INTEGER,
+				name TEXT NOT NULL,
+				framework TEXT DEFAULT 'soc2',
+				format TEXT DEFAULT 'html',
+				schedule_cron TEXT DEFAULT '0 6 * * 1',
+				recipients TEXT DEFAULT '[]',
+				enabled INTEGER DEFAULT 1,
+				last_run INTEGER,
+				next_run INTEGER,
+				created_at INTEGER DEFAULT (strftime('%s', 'now')),
+				updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+				FOREIGN KEY (project_id) REFERENCES projects(id)
+			);
+		`)
+
+		// Generated reports table
+		db.Exec(`
+			CREATE TABLE IF NOT EXISTS generated_reports (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				report_id INTEGER,
+				project_id INTEGER,
+				file_path TEXT,
+				file_size INTEGER,
+				status TEXT DEFAULT 'pending',
+				error_message TEXT DEFAULT '',
+				generated_at INTEGER,
+				sent_at INTEGER,
+				sent_to TEXT DEFAULT '[]',
+				created_at INTEGER DEFAULT (strftime('%s', 'now'))
+			);
+		`)
+
+		// Add hash chain columns to fim_events
+		db.Exec(`ALTER TABLE fim_events ADD COLUMN prev_event_hash TEXT DEFAULT '';`)
+		db.Exec(`ALTER TABLE fim_events ADD COLUMN event_hash TEXT DEFAULT '';`)
+
+		db.Exec(`INSERT INTO schema_migrations (version) VALUES (15);`)
+		currentVersion = 15
+	}
+
 	log.Println("Database initialized and migrated successfully.")
 }
 
@@ -437,7 +538,7 @@ func getProjectFiles(projectID int) (map[string]ProjectFile, error) {
 	if db == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
-	rows, err := db.Query("SELECT id, project_id, file_path, hash, file_size, mod_time, status FROM project_files WHERE project_id=?", projectID)
+	rows, err := db.Query("SELECT id, project_id, file_path, hash, file_size, mod_time, status, COALESCE(file_mode, ''), COALESCE(file_uid, 0), COALESCE(file_gid, 0), COALESCE(permission_changes, 0) FROM project_files WHERE project_id=?", projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +547,7 @@ func getProjectFiles(projectID int) (map[string]ProjectFile, error) {
 	files := make(map[string]ProjectFile)
 	for rows.Next() {
 		var pf ProjectFile
-		if err := rows.Scan(&pf.ID, &pf.ProjectID, &pf.FilePath, &pf.Hash, &pf.FileSize, &pf.ModTime, &pf.Status); err != nil {
+		if err := rows.Scan(&pf.ID, &pf.ProjectID, &pf.FilePath, &pf.Hash, &pf.FileSize, &pf.ModTime, &pf.Status, &pf.FileMode, &pf.FileUID, &pf.FileGID, &pf.PermissionChanges); err != nil {
 			return nil, err
 		}
 		files[pf.FilePath] = pf
@@ -462,14 +563,14 @@ func batchUpsertProjectFiles(files []ProjectFile) error {
 	if err != nil {
 		return err
 	}
-	stmtInsert, err := tx.Prepare("INSERT OR IGNORE INTO project_files (project_id, file_path, hash, file_size, mod_time, status, file_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))")
+	stmtInsert, err := tx.Prepare("INSERT OR IGNORE INTO project_files (project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, permission_changes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))")
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 	defer stmtInsert.Close()
 
-	stmtUpdate, err := tx.Prepare("UPDATE project_files SET hash=?, file_size=?, mod_time=?, status=?, updated_at=strftime('%s', 'now') WHERE id=?")
+	stmtUpdate, err := tx.Prepare("UPDATE project_files SET hash=?, file_size=?, mod_time=?, file_mode=?, file_uid=?, file_gid=?, status=?, updated_at=strftime('%s', 'now') WHERE id=?")
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -481,11 +582,15 @@ func batchUpsertProjectFiles(files []ProjectFile) error {
 		if fileType == "" {
 			fileType = "project"
 		}
+		fileMode := f.FileMode
+		if fileMode == "" {
+			fileMode = ""
+		}
 		if f.ID == 0 {
 			// INSERT OR IGNORE - skip if already exists (handles orphan re-detection)
-			_, err = tx.Stmt(stmtInsert).Exec(f.ProjectID, f.FilePath, f.Hash, f.FileSize, f.ModTime, f.Status, fileType)
+			_, err = tx.Stmt(stmtInsert).Exec(f.ProjectID, f.FilePath, f.Hash, f.FileSize, f.ModTime, f.Status, fileType, fileMode, f.FileUID, f.FileGID, f.PermissionChanges)
 		} else {
-			_, err = stmtUpdate.Exec(f.Hash, f.FileSize, f.ModTime, f.Status, f.ID)
+			_, err = stmtUpdate.Exec(f.Hash, f.FileSize, f.ModTime, fileMode, f.FileUID, f.FileGID, f.Status, f.ID)
 		}
 		if err != nil {
 			tx.Rollback()

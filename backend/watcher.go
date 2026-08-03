@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/arissupriy/ojs-monitor/backend/alerts"
 	"github.com/fsnotify/fsnotify"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -474,13 +476,18 @@ func persistFIMEvents(projectID int, events []FIMEventRaw) {
 		default:
 		}
 
-		// Get file hash if it's a file (not directory)
+		// Get file metadata (hash and permissions) if it's a file (not directory)
 		var fileHash string
 		var fileSize int64
+		var fileMode string
+		var fileUID, fileGID int
 		if event.EventType != "DELETED" {
-			if hash, size, err := getFileHash(event.Path); err == nil {
-				fileHash = hash
-				fileSize = size
+			if meta, err := getFileMetadata(event.Path); err == nil {
+				fileHash = meta.Hash
+				fileSize = meta.Size
+				fileMode = meta.Mode
+				fileUID = meta.UID
+				fileGID = meta.GID
 			}
 		}
 
@@ -492,12 +499,15 @@ func persistFIMEvents(projectID int, events []FIMEventRaw) {
 			ProjectID: projectID,
 			EventType: event.EventType,
 			FilePath:  event.Path,
-			Hash:      fileHash,
-			FileSize:  fileSize,
-			ModTime:   event.Timestamp.Unix(),
-			FileType:  fileType,
+			Hash:     fileHash,
+			FileSize: fileSize,
+			ModTime:  event.Timestamp.Unix(),
+			FileMode: fileMode,
+			FileUID:  fileUID,
+			FileGID:  fileGID,
+			FileType: fileType,
 			Timestamp: event.Timestamp,
-			Source:    "WATCHER",
+			Source:   "WATCHER",
 		}
 
 		if err := updateFileState(update); err != nil {
@@ -527,11 +537,19 @@ func getFileType(filePath string, projectID int) string {
 // FileStateUpdate represents a file state change for atomic processing
 type FileStateUpdate struct {
 	ProjectID int
-	EventType string // CREATED, MODIFIED, DELETED
+	EventType string // CREATED, MODIFIED, DELETED, PERMISSION_CHANGED
 	FilePath  string
 	Hash      string
 	FileSize  int64
 	ModTime   int64
+	// Permission tracking fields
+	FileMode string
+	FileUID  int
+	FileGID  int
+	// For permission change events
+	OldFileMode string
+	OldFileUID  int
+	OldFileGID  int
 	FileType  string
 	Timestamp time.Time
 	Source    string // "WATCHER", "BASELINE", "INTEGRITY_SCAN"
@@ -556,14 +574,17 @@ func updateFileState(update FileStateUpdate) error {
 		modTime = ts.Unix()
 	}
 
+	// Default risk level for permission changes is HIGH
+	permRiskLevel := "HIGH"
+
 	switch update.EventType {
 	case "CREATED":
 		// INSERT OR IGNORE - handle race condition with watcher + baseline
 		_, err := tx.Exec(`
 			INSERT OR IGNORE INTO project_files
-			(project_id, file_path, hash, file_size, mod_time, status, file_type, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, 'ADDED', ?, strftime('%s', 'now'), strftime('%s', 'now'))
-		`, update.ProjectID, update.FilePath, update.Hash, update.FileSize, modTime, update.FileType)
+			(project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, permission_changes, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, 'ADDED', ?, ?, ?, ?, 0, strftime('%s', 'now'), strftime('%s', 'now'))
+		`, update.ProjectID, update.FilePath, update.Hash, update.FileSize, modTime, update.FileType, update.FileMode, update.FileUID, update.FileGID)
 		if err != nil {
 			return fmt.Errorf("failed to insert file: %v", err)
 		}
@@ -575,10 +596,10 @@ func updateFileState(update FileStateUpdate) error {
 		// Insert into fim_events with file_id
 		_, err = tx.Exec(`
 			INSERT INTO fim_events
-			(project_id, file_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name,
+			(project_id, file_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid, actor_type, actor_id, actor_name,
 			 actor_details, risk_level, classification, source, details, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash, update.FileMode, update.FileUID, update.FileGID,
 			"UNKNOWN", "", "system", "actor attribution not available via inotify",
 			classifyRisk(update.EventType, update.FilePath), classifyClassification(update.FilePath),
 			update.Source, fmt.Sprintf(`{"size": %d}`, update.FileSize), ts.Unix())
@@ -587,12 +608,41 @@ func updateFileState(update FileStateUpdate) error {
 		}
 
 	case "MODIFIED":
+		// First check if there are permission changes
+		var oldMode, oldUID, oldGID string
+		var existingID int
+		var permissionChanges int
+		var hasPermChange bool
+
+		tx.QueryRow("SELECT id, file_mode, file_uid, file_gid, COALESCE(permission_changes, 0) FROM project_files WHERE project_id = ? AND file_path = ?",
+			update.ProjectID, update.FilePath).Scan(&existingID, &oldMode, &oldUID, &oldGID, &permissionChanges)
+
+		// Check for permission changes
+		if update.FileMode != "" && oldMode != "" && update.FileMode != oldMode {
+			hasPermChange = true
+		}
+		if update.FileUID > 0 && oldUID != "" {
+			var oldUIDInt int
+			fmt.Sscanf(oldUID, "%d", &oldUIDInt)
+			if update.FileUID != oldUIDInt {
+				hasPermChange = true
+			}
+		}
+		if update.FileGID > 0 && oldGID != "" {
+			var oldGIDInt int
+			fmt.Sscanf(oldGID, "%d", &oldGIDInt)
+			if update.FileGID != oldGIDInt {
+				hasPermChange = true
+			}
+		}
+
 		// UPDATE only if exists (has baseline)
 		result, err := tx.Exec(`
 			UPDATE project_files
-			SET hash = ?, file_size = ?, mod_time = ?, status = 'MODIFIED', updated_at = strftime('%s', 'now')
+			SET hash = ?, file_size = ?, mod_time = ?, file_mode = ?, file_uid = ?, file_gid = ?,
+			    status = 'MODIFIED', updated_at = strftime('%s', 'now')
 			WHERE project_id = ? AND file_path = ?
-		`, update.Hash, update.FileSize, modTime, update.ProjectID, update.FilePath)
+		`, update.Hash, update.FileSize, modTime, update.FileMode, update.FileUID, update.FileGID, update.ProjectID, update.FilePath)
 		if err != nil {
 			return fmt.Errorf("failed to update file: %v", err)
 		}
@@ -602,27 +652,47 @@ func updateFileState(update FileStateUpdate) error {
 			// File not in baseline - insert as ADDED
 			res, err := tx.Exec(`
 				INSERT INTO project_files
-				(project_id, file_path, hash, file_size, mod_time, status, file_type, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, 'ADDED', ?, strftime('%s', 'now'), strftime('%s', 'now'))
-			`, update.ProjectID, update.FilePath, update.Hash, update.FileSize, modTime, update.FileType)
+				(project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, permission_changes, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, 'ADDED', ?, ?, ?, ?, 0, strftime('%s', 'now'), strftime('%s', 'now'))
+			`, update.ProjectID, update.FilePath, update.Hash, update.FileSize, modTime, update.FileType, update.FileMode, update.FileUID, update.FileGID)
 			if err != nil {
 				return fmt.Errorf("failed to insert new file from modification: %v", err)
 			}
 			id, _ := res.LastInsertId()
 			fileID = int(id)
 		} else {
-			// Get file_id for fim_events
-			tx.QueryRow("SELECT id FROM project_files WHERE project_id = ? AND file_path = ?",
-				update.ProjectID, update.FilePath).Scan(&fileID)
+			fileID = existingID
+		}
+
+		// If permission changed, create a separate permission change event
+		if hasPermChange {
+			// Increment permission changes counter
+			tx.Exec("UPDATE project_files SET permission_changes = permission_changes + 1 WHERE id = ?", fileID)
+
+			// Insert permission change event
+			_, err = tx.Exec(`
+				INSERT INTO fim_events
+				(project_id, file_id, event_type, file_path, file_mode, file_uid, file_gid,
+				 old_file_mode, old_file_uid, old_file_gid, actor_type, actor_id, actor_name,
+				 actor_details, risk_level, classification, source, details, timestamp)
+				VALUES (?, ?, 'PERMISSION_CHANGED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, update.ProjectID, fileID, update.FilePath, update.FileMode, update.FileUID, update.FileGID,
+				oldMode, oldUID, oldGID,
+				"UNKNOWN", "", "system", "actor attribution not available via inotify",
+				permRiskLevel, classifyClassification(update.FilePath),
+				update.Source, fmt.Sprintf(`{"size": %d, "reason": "permission change detected"}`, update.FileSize), ts.Unix())
+			if err != nil {
+				return fmt.Errorf("failed to insert permission change event: %v", err)
+			}
 		}
 
 		// Insert into fim_events with file_id
 		_, err = tx.Exec(`
 			INSERT INTO fim_events
-			(project_id, file_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name,
+			(project_id, file_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid, actor_type, actor_id, actor_name,
 			 actor_details, risk_level, classification, source, details, timestamp)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash, update.FileMode, update.FileUID, update.FileGID,
 			"UNKNOWN", "", "system", "actor attribution not available via inotify",
 			classifyRisk(update.EventType, update.FilePath), classifyClassification(update.FilePath),
 			update.Source, fmt.Sprintf(`{"size": %d}`, update.FileSize), ts.Unix())
@@ -650,10 +720,10 @@ func updateFileState(update FileStateUpdate) error {
 			// Insert into fim_events with file_id
 			_, err = tx.Exec(`
 				INSERT INTO fim_events
-				(project_id, file_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name,
+				(project_id, file_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid, actor_type, actor_id, actor_name,
 				 actor_details, risk_level, classification, source, details, timestamp)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash,
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, update.ProjectID, fileID, update.EventType, update.FilePath, update.Hash, update.FileMode, update.FileUID, update.FileGID,
 				"UNKNOWN", "", "system", "actor attribution not available via inotify",
 				classifyRisk(update.EventType, update.FilePath), classifyClassification(update.FilePath),
 				update.Source, fmt.Sprintf(`{"size": %d}`, update.FileSize), ts.Unix())
@@ -664,13 +734,61 @@ func updateFileState(update FileStateUpdate) error {
 		// If not exists, just ignore (file was never in baseline)
 	}
 
-	return tx.Commit()
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	// Dispatch alerts for HIGH and CRITICAL risk events
+	dispatchAlertIfNeeded(update)
+
+	return nil
+}
+
+// dispatchAlertIfNeeded dispatches alerts for significant FIM events
+func dispatchAlertIfNeeded(update FileStateUpdate) {
+	riskLevel := classifyRisk(update.EventType, update.FilePath)
+
+	// Only alert for HIGH or CRITICAL risk events
+	if riskLevel != "HIGH" && riskLevel != "CRITICAL" {
+		return
+	}
+
+	// Get project name
+	projectName := ""
+	if p, err := getProjectByID(update.ProjectID); err == nil {
+		projectName = p.Name
+	}
+
+	// Get event ID from database (last inserted)
+	var eventID int
+	db.QueryRow("SELECT last_insert_rowid()").Scan(&eventID)
+
+	alerts.DispatchAlert(
+		update.ProjectID,
+		projectName,
+		eventID,
+		update.EventType,
+		update.FilePath,
+		update.Hash,
+		update.FileMode,
+		update.OldFileMode,
+		riskLevel,
+		classifyClassification(update.FilePath),
+		"system",
+		"actor attribution not available via inotify",
+		update.Source,
+		update.Timestamp,
+	)
 }
 
 // classifyRisk determines risk level based on event type and path
 func classifyRisk(eventType, filePath string) string {
 	if eventType == "DELETED" {
 		return "MEDIUM"
+	}
+	if eventType == "PERMISSION_CHANGED" {
+		return "HIGH"
 	}
 	if strings.Contains(filePath, "/usageStats/") ||
 		strings.Contains(filePath, "/cache/") ||
@@ -810,30 +928,64 @@ func correlateOJS(filePath string, eventType string, projectID int) OJSInfo {
 	return result
 }
 
-// getFileHash calculates SHA256 hash of file
-func getFileHash(filePath string) (string, int64, error) {
+// FileMetadata contains file hash and permission information
+type FileMetadata struct {
+	Hash   string
+	Size   int64
+	Mode   string // Octal permission string (e.g., "0644")
+	UID    int    // Owner user ID
+	GID    int    // Owner group ID
+}
+
+// getFileMetadata calculates SHA256 hash and captures permission info of a file
+func getFileMetadata(filePath string) (FileMetadata, error) {
+	meta := FileMetadata{}
+
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", 0, err
+		return meta, err
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		return "", 0, err
+		return meta, err
 	}
 
-	// Skip large files (> 10MB)
+	// Get permission info from syscall.Stat_t
+	if stat.Sys() != nil {
+		if sysStat, ok := stat.Sys().(*syscall.Stat_t); ok {
+			meta.UID = int(sysStat.Uid)
+			meta.GID = int(sysStat.Gid)
+			meta.Mode = fmt.Sprintf("%04o", stat.Mode().Perm())
+		}
+	}
+
+	// If syscall didn't work, fall back to os.FileMode
+	if meta.Mode == "" {
+		meta.Mode = fmt.Sprintf("%04o", stat.Mode().Perm())
+	}
+
+	// Skip large files (> 10MB) for hashing, but still capture metadata
 	if stat.Size() > 10*1024*1024 {
-		return "", stat.Size(), nil
+		return meta, nil
 	}
 
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return "", stat.Size(), err
+		return meta, err
 	}
 
-	return hex.EncodeToString(hash.Sum(nil)), stat.Size(), nil
+	meta.Hash = hex.EncodeToString(hash.Sum(nil))
+	meta.Size = stat.Size()
+
+	return meta, nil
+}
+
+// getFileHash calculates SHA256 hash of file (legacy function for compatibility)
+func getFileHash(filePath string) (string, int64, error) {
+	meta, err := getFileMetadata(filePath)
+	return meta.Hash, meta.Size, err
 }
 
 // storeFIMEvent stores event in database

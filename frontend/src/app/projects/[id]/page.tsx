@@ -30,6 +30,7 @@ import {
   Globe,
   UserCheck,
   Play,
+  Bell,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -514,6 +515,8 @@ export default function ProjectDetail({
           { id: "fim", label: "FIM", icon: <FileWarning className="w-4 h-4" />, href: `/projects/${id}/fim` },
           { id: "orphan", label: "Orphans", icon: <AlertTriangle className="w-4 h-4" />, danger: orphanFiles.length > 0, href: `/projects/${id}?tab=orphan` },
           { id: "db", label: "Database", icon: <Database className="w-4 h-4" />, href: `/projects/${id}/database` },
+          { id: "compliance", label: "Compliance", icon: <ShieldCheck className="w-4 h-4" />, href: `/projects/${id}/compliance` },
+          { id: "alerts", label: "Alerts", icon: <Bell className="w-4 h-4" />, href: `/projects/${id}/alerts` },
           { id: "jobs", label: "Jobs", icon: <Terminal className="w-4 h-4" />, href: `/projects/${id}/jobs` },
         ].map((tab) => (
           <Link

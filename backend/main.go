@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/arissupriy/ojs-monitor/backend/alerts"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -143,6 +144,9 @@ func main() {
 	// Start Async Worker
 	go StartWorker()
 
+	// Initialize Alert Dispatcher
+	alerts.InitAlertDispatcher(db)
+
 	// Restore FIM watchers for active projects (after worker is ready)
 	go RestoreWatchersOnStartup()
 
@@ -190,6 +194,20 @@ func main() {
 			r.Post("/projects/{id}/watcher/start", handleStartFIMWatcher) // start FIM watcher
 			r.Post("/projects/{id}/watcher/stop", handleStopFIMWatcher) // stop FIM watcher
 			r.Get("/projects/{id}/watcher/status", handleGetFIMWatcherStatus) // watcher status
+			// Alert configuration
+			r.Get("/projects/{id}/alerts/config", handleGetAlertConfigs) // get alert configs
+			r.Post("/projects/{id}/alerts/config", handleSetAlertConfig) // set alert config
+			r.Delete("/projects/{id}/alerts/config", handleDeleteAlertConfig) // delete alert config
+			r.Post("/projects/{id}/alerts/test", handleTestAlertConfig) // test alert
+			r.Get("/projects/{id}/alerts/history", handleGetAlertHistory) // alert history
+			r.Put("/alerts/{alertId}/acknowledge", handleAcknowledgeAlert) // acknowledge alert
+			// Reports & Compliance
+			r.Get("/projects/{id}/reports", handleGetReports) // list scheduled reports
+			r.Post("/projects/{id}/reports", handleCreateReport) // create scheduled report
+			r.Post("/projects/{id}/reports/generate", handleGenerateReport) // generate report
+			r.Get("/projects/{id}/reports/verify", handleVerifyIntegrity) // verify audit trail
+			r.Post("/projects/{id}/reports/hash-chain", handleUpdateHashChain) // update hash chain
+			r.Delete("/reports/{reportId}", handleDeleteReport) // delete report
 			r.Get("/logs", handleGetLogs)
 		})
 	})
@@ -224,6 +242,9 @@ func main() {
 
 	// Stop FIM watchers
 	StopAllFIMWatchers()
+
+	// Stop Alert Dispatcher
+	alerts.StopAlertDispatcher()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)

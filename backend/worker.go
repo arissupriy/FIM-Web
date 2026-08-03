@@ -414,6 +414,17 @@ func processNextJob() {
 			size := info.Size()
 			modTime := info.ModTime().Unix()
 
+			// Get file permissions
+			fileMode := fmt.Sprintf("%04o", info.Mode().Perm())
+			fileUID := 0
+			fileGID := 0
+			if info.Sys() != nil {
+				if sysStat, ok := info.Sys().(*syscall.Stat_t); ok {
+					fileUID = int(sysStat.Uid)
+					fileGID = int(sysStat.Gid)
+				}
+			}
+
 			hashStr := ""
 			if size < 10*1024*1024 { // Hash if < 10MB
 				f, err := os.Open(path)
@@ -443,11 +454,26 @@ func processNextJob() {
 
 			filesMutex.Lock()
 			if existing, ok := existingFiles[path]; ok {
-				if existing.FileSize != size || existing.ModTime != modTime || (hashStr != "" && existing.Hash != hashStr) {
+				// Check if file is modified (size, mtime, or hash changed)
+				isModified := existing.FileSize != size || existing.ModTime != modTime || (hashStr != "" && existing.Hash != hashStr)
+				// Check for permission changes
+				hasPermChange := false
+				if existing.FileMode != "" && fileMode != "" && existing.FileMode != fileMode {
+					hasPermChange = true
+				}
+
+				if isModified || hasPermChange {
 					existing.FileSize = size
 					existing.ModTime = modTime
 					existing.Hash = hashStr
-					existing.Status = "MODIFIED"
+					existing.FileMode = fileMode
+					existing.FileUID = fileUID
+					existing.FileGID = fileGID
+					if hasPermChange && !isModified {
+						existing.Status = "PERMISSION_CHANGED"
+					} else {
+						existing.Status = "MODIFIED"
+					}
 					modifiedFiles = append(modifiedFiles, existing)
 				}
 			} else {
@@ -459,6 +485,9 @@ func processNextJob() {
 					ModTime:   modTime,
 					Status:    "ADDED",
 					FileType:  fileType,
+					FileMode:  fileMode,
+					FileUID:   fileUID,
+					FileGID:   fileGID,
 				})
 			}
 			filesMutex.Unlock()
@@ -525,6 +554,18 @@ func processNextJob() {
 			if _, loaded := seenFiles.LoadOrStore(path, true); !loaded {
 				size := info.Size()
 				modTime := info.ModTime().Unix()
+
+				// Get file permissions
+				fileMode := fmt.Sprintf("%04o", info.Mode().Perm())
+				fileUID := 0
+				fileGID := 0
+				if info.Sys() != nil {
+					if sysStat, ok := info.Sys().(*syscall.Stat_t); ok {
+						fileUID = int(sysStat.Uid)
+						fileGID = int(sysStat.Gid)
+					}
+				}
+
 				hashStr := ""
 				if size < 10*1024*1024 {
 					f, err := os.Open(path)
@@ -547,6 +588,9 @@ func processNextJob() {
 					ModTime:   modTime,
 					Status:    "ADDED",
 					FileType:  fileType,
+					FileMode:  fileMode,
+					FileUID:   fileUID,
+					FileGID:   fileGID,
 				})
 				filesMutex.Unlock()
 			}
@@ -607,14 +651,33 @@ func processNextJob() {
 	if job.Type == "integrity_scan" {
 		now := time.Now().Unix()
 		for _, f := range modifiedFiles {
-			db.Exec(`
-				INSERT INTO fim_events
-				(project_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name,
-				 actor_details, risk_level, classification, source, details, timestamp)
-				VALUES (?, 'MODIFIED', ?, ?, 'SYSTEM', '', 'integrity_scan',
-				 'baseline comparison', 'HIGH', 'UNKNOWN_SOURCE', 'INTEGRITY_SCAN',
-				 '{"size": ?}', ?)
-			`, p.ID, f.FilePath, f.Hash, f.FileSize, now)
+			eventType := "MODIFIED"
+			// Check if this is a permission change
+			if f.Status == "PERMISSION_CHANGED" {
+				eventType = "PERMISSION_CHANGED"
+			}
+
+			if eventType == "PERMISSION_CHANGED" {
+				// Permission change event - include permission details
+				db.Exec(`
+					INSERT INTO fim_events
+					(project_id, event_type, file_path, file_hash, file_mode, file_uid, file_gid,
+					 actor_type, actor_id, actor_name, actor_details, risk_level, classification, source, details, timestamp)
+					VALUES (?, 'PERMISSION_CHANGED', ?, ?, ?, ?, ?, 'SYSTEM', '', 'integrity_scan',
+					 'baseline comparison', 'HIGH', 'UNKNOWN_SOURCE', 'INTEGRITY_SCAN',
+					 '{"size": ?, "reason": "permission change detected"}', ?)
+				`, p.ID, f.FilePath, f.Hash, f.FileMode, f.FileUID, f.FileGID, f.FileSize, now)
+			} else {
+				// Regular modification event
+				db.Exec(`
+					INSERT INTO fim_events
+					(project_id, event_type, file_path, file_hash, actor_type, actor_id, actor_name,
+					 actor_details, risk_level, classification, source, details, timestamp)
+					VALUES (?, 'MODIFIED', ?, ?, 'SYSTEM', '', 'integrity_scan',
+					 'baseline comparison', 'HIGH', 'UNKNOWN_SOURCE', 'INTEGRITY_SCAN',
+					 '{"size": ?}', ?)
+				`, p.ID, f.FilePath, f.Hash, f.FileSize, now)
+			}
 		}
 		for _, id := range deletedIDs {
 			var filePath string

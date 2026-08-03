@@ -1,83 +1,82 @@
-2026/08/01 23:36:40 Config loaded: Port=8080, DB=./data/ojs_monitor.db, Locale=id-ID
-2026/08/01 23:36:40 Database initialized and migrated successfully.
-2026/08/01 23:36:40 Admin verified: admin / admin123
-2026/08/01 23:36:40 Starting background worker...
-2026/08/01 23:36:40 Starting OJS Security Monitor Backend on 0.0.0.0:8080
-2026/08/01 23:36:40 Restoring FIM watchers on startup...
-2026/08/01 23:36:40 Watcher restoration initiated for 1 projects
-2026/08/01 23:36:40 FIM Watcher (fsnotify) started for project 1 with 2 paths
-2026/08/01 23:36:40 Watcher already running for project 1
-2026/08/01 23:37:08 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:55578 - 200 0B in 12µs
-2026/08/01 23:37:08 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:55578 - 200 640B in 308.848µs
-2026/08/01 23:37:08 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:55586 - 200 0B in 8.149µs
-2026/08/01 23:37:08 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:55586 - 200 0B in 12.35µs
-2026/08/01 23:37:08 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:55578 - 200 394B in 835.945µs
-2026/08/01 23:37:08 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:55586 - 200 0B in 10.121µs
-2026/08/01 23:37:08 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:55578 - 200 18480B in 377.793336ms
-2026/08/01 23:37:09 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:55586 - 200 301B in 946.94229ms
-2026/08/01 23:37:12 "OPTIONS http://localhost:8080/api/projects/1/files/1941962 HTTP/1.1" from [::1]:55586 - 200 0B in 12.756µs
-2026/08/01 23:37:12 "GET http://localhost:8080/api/projects/1/files/1941962 HTTP/1.1" from [::1]:55586 - 200 576B in 493.35µs
-2026/08/01 23:37:12 "OPTIONS http://localhost:8080/api/projects/1/files/1941962 HTTP/1.1" from [::1]:55578 - 200 0B in 11.431µs
-2026/08/01 23:37:12 "GET http://localhost:8080/api/projects/1/files/1941962 HTTP/1.1" from [::1]:55586 - 200 576B in 456.804µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:55586 - 200 0B in 14.181µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:55578 - 200 0B in 15.889µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:55578 - 200 0B in 13.79µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:55586 - 200 0B in 10.997µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60904 - 200 0B in 14.225µs
-2026/08/01 23:37:14 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:55586 - 200 640B in 428.785µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:55578 - 200 0B in 12.105µs
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:60916 - 200 0B in 16.461µs
-2026/08/01 23:37:14 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:60922 - 200 394B in 1.152905ms
-2026/08/01 23:37:14 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:55586 - 200 0B in 22.184µs
-2026/08/01 23:37:14 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:55578 - 200 394B in 1.76955ms
-2026/08/01 23:37:14 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:55586 - 200 640B in 4.974596ms
-2026/08/01 23:37:14 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60916 - 200 18480B in 411.97373ms
-2026/08/01 23:37:15 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60938 - 200 18480B in 442.791949ms
-2026/08/01 23:37:15 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:60904 - 200 301B in 1.045678312s
-2026/08/01 23:37:15 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:60922 - 200 301B in 1.130515781s
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60922 - 200 0B in 11.296µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:60922 - 200 0B in 12.647µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:60904 - 200 0B in 9.984µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:60922 - 200 0B in 11.185µs
-2026/08/01 23:37:21 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60938 - 200 640B in 262.744µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60904 - 200 0B in 10.233µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:60922 - 200 0B in 10.768µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:60938 - 200 0B in 8.952µs
-2026/08/01 23:37:21 "OPTIONS http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:60904 - 200 0B in 6.321µs
-2026/08/01 23:37:21 "GET http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:60922 - 200 10894B in 1.263052ms
-2026/08/01 23:37:21 "GET http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:55586 - 200 212B in 5.708097ms
-2026/08/01 23:37:21 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:55586 - 200 640B in 1.470208ms
-2026/08/01 23:37:21 "GET http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:60938 - 200 10894B in 2.024502ms
-2026/08/01 23:37:21 "GET http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:60922 - 200 212B in 7.653561ms
-2026/08/01 23:37:21 "GET http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:60916 - 200 330B in 61.519932ms
-2026/08/01 23:37:21 "GET http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:60904 - 200 330B in 63.589284ms
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60904 - 200 0B in 10.085µs
-2026/08/01 23:37:23 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60904 - 200 640B in 310.612µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:60916 - 200 0B in 11.684µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:60922 - 200 0B in 7.454µs
-2026/08/01 23:37:23 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:60922 - 200 394B in 621.667µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60916 - 200 0B in 12.155µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60922 - 200 0B in 11.938µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:60916 - 200 0B in 11.254µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:60916 - 200 0B in 11.79µs
-2026/08/01 23:37:23 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60916 - 200 0B in 11.778µs
-2026/08/01 23:37:23 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:55586 - 200 394B in 4.287116ms
-2026/08/01 23:37:23 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:60938 - 200 640B in 4.720147ms
-2026/08/01 23:37:23 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60916 - 200 18480B in 430.102899ms
-2026/08/01 23:37:23 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60922 - 200 18480B in 480.481303ms
-2026/08/01 23:37:24 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:55578 - 200 301B in 1.194155703s
-2026/08/01 23:37:24 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:60904 - 200 301B in 1.298666947s
-2026/08/01 23:37:36 "OPTIONS http://localhost:8080/api/projects/1/events?page=1&limit=50 HTTP/1.1" from [::1]:60904 - 200 0B in 11.85µs
-2026/08/01 23:37:36 "GET http://localhost:8080/api/projects/1/events?page=1&limit=50 HTTP/1.1" from [::1]:60904 - 200 26557B in 1.372969ms
-2026/08/01 23:37:45 Watcher: CREATED /home/arissupriy/stai/ejournal.staialanwar.ac.id/ojs-files/temp/final_test (copy 1).txt
-2026/08/01 23:37:48 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60904 - 200 0B in 10.919µs
-2026/08/01 23:37:48 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:60904 - 200 18461B in 232.71185ms
-2026/08/01 23:37:50 "OPTIONS http://localhost:8080/api/projects/1/events?page=1&limit=50 HTTP/1.1" from [::1]:60904 - 200 0B in 9.352µs
-2026/08/01 23:37:50 "GET http://localhost:8080/api/projects/1/events?page=1&limit=50 HTTP/1.1" from [::1]:60904 - 200 27100B in 886.447µs
-2026/08/01 23:37:52 "OPTIONS http://localhost:8080/api/projects/1/files/1969044 HTTP/1.1" from [::1]:60904 - 200 0B in 11.053µs
-2026/08/01 23:37:52 "OPTIONS http://localhost:8080/api/projects/1/files/1969044 HTTP/1.1" from [::1]:55578 - 200 0B in 11.633µs
-2026/08/01 23:37:53 "GET http://localhost:8080/api/projects/1/files/1969044 HTTP/1.1" from [::1]:55578 - 200 551B in 422.641µs
-2026/08/01 23:37:53 "GET http://localhost:8080/api/projects/1/files/1969044 HTTP/1.1" from [::1]:60904 - 200 551B in 258.465µs
-2026/08/02 05:39:43 Received signal terminated, initiating graceful shutdown...
-2026/08/02 05:39:43 Scheduler goroutine shutting down...
-2026/08/02 05:39:44 Worker shutting down gracefully...
+2026/08/03 07:50:52 Config loaded: Port=8080, DB=./data/ojs_monitor.db, Locale=id-ID, ScanTimeout=2h
+2026/08/03 07:50:52 Database initialized and migrated successfully.
+2026/08/03 07:50:52 Admin user 'admin' already exists
+2026/08/03 07:50:52 Registered alert channel: email
+2026/08/03 07:50:52 Registered alert channel: slack
+2026/08/03 07:50:52 Registered alert channel: webhook
+2026/08/03 07:50:52 Alert dispatcher started
+2026/08/03 07:50:52 Starting background worker...
+2026/08/03 07:50:52 Restoring FIM watchers on startup...
+2026/08/03 07:50:52 Starting OJS Security Monitor Backend on 0.0.0.0:8080
+2026/08/03 07:50:52 Watcher restoration initiated for 1 projects
+2026/08/03 07:50:52 FIM Watcher (fsnotify) started for project 1 with 2 paths
+2026/08/03 07:50:52 Watcher already running for project 1
+2026/08/03 07:51:01 "OPTIONS http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 200 0B in 16.717µs
+2026/08/03 07:51:01 "GET http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 401 53B in 114.738µs
+2026/08/03 07:51:11 "OPTIONS http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 200 0B in 14.806µs
+2026/08/03 07:51:11 "GET http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 401 53B in 46.277µs
+2026/08/03 07:51:13 "OPTIONS http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 200 0B in 20.817µs
+2026/08/03 07:51:13 "POST http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 401 53B in 146.532µs
+2026/08/03 07:51:23 "OPTIONS http://localhost:8080/api/login HTTP/1.1" from [::1]:50242 - 200 0B in 32.593µs
+2026/08/03 07:51:23 "POST http://localhost:8080/api/login HTTP/1.1" from [::1]:50242 - 200 204B in 138.91686ms
+2026/08/03 07:51:24 "OPTIONS http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 200 0B in 12.887µs
+2026/08/03 07:51:24 "OPTIONS http://localhost:8080/api/projects HTTP/1.1" from [::1]:54214 - 200 0B in 85.253µs
+2026/08/03 07:51:24 "GET http://localhost:8080/api/projects HTTP/1.1" from [::1]:54214 - 200 950B in 704.29598ms
+2026/08/03 07:51:24 "GET http://localhost:8080/api/projects HTTP/1.1" from [::1]:50242 - 200 950B in 55.609608ms
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:50242 - 200 0B in 19.66µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:54214 - 200 0B in 10.654µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:54228 - 200 0B in 15.362µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:54230 - 200 0B in 9.66µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54236 - 200 0B in 7.628µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:54242 - 200 0B in 13.089µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:50242 - 200 0B in 16.326µs
+2026/08/03 07:51:27 "OPTIONS http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:54214 - 200 0B in 14.976µs
+2026/08/03 07:51:27 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54242 - 200 640B in 697.678µs
+2026/08/03 07:51:27 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54230 - 200 640B in 1.74819ms
+2026/08/03 07:51:27 "GET http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:50242 - 200 10894B in 2.70026ms
+2026/08/03 07:51:27 "GET http://localhost:8080/api/projects/1/jobs HTTP/1.1" from [::1]:50242 - 200 10894B in 1.224329ms
+2026/08/03 07:51:27 "GET http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:54228 - 200 212B in 15.731318ms
+2026/08/03 07:51:27 "GET http://localhost:8080/api/projects/1/details HTTP/1.1" from [::1]:50242 - 200 212B in 4.780638ms
+2026/08/03 07:51:27 "GET http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:54236 - 200 330B in 77.220259ms
+2026/08/03 07:51:27 "GET http://localhost:8080/api/audit/1 HTTP/1.1" from [::1]:50242 - 200 330B in 56.591052ms
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:50242 - 200 640B in 283.192µs
+2026/08/03 07:51:31 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54236 - 200 0B in 8.455µs
+2026/08/03 07:51:31 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54228 - 200 0B in 11.997µs
+2026/08/03 07:51:31 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54230 - 200 0B in 9.854µs
+2026/08/03 07:51:31 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54242 - 200 0B in 14.644µs
+2026/08/03 07:51:31 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54214 - 200 0B in 12.059µs
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54236 - 200 640B in 396.523µs
+2026/08/03 07:51:31 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54228 - 200 0B in 15.438µs
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54214 - 200 392B in 897.662µs
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54228 - 200 392B in 2.404896ms
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54236 - 200 18461B in 322.361586ms
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54228 - 200 18461B in 233.749953ms
+2026/08/03 07:51:31 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54242 - 200 285B in 816.483898ms
+2026/08/03 07:51:32 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54228 - 200 285B in 732.564886ms
+2026/08/03 07:51:34 "OPTIONS http://localhost:8080/api/projects/1/files/1941963 HTTP/1.1" from [::1]:54228 - 200 0B in 14.296µs
+2026/08/03 07:51:34 "OPTIONS http://localhost:8080/api/projects/1/files/1941963 HTTP/1.1" from [::1]:54242 - 200 0B in 13.725µs
+2026/08/03 07:51:34 "GET http://localhost:8080/api/projects/1/files/1941963 HTTP/1.1" from [::1]:54242 - 200 402B in 385.212µs
+2026/08/03 07:51:34 "GET http://localhost:8080/api/projects/1/files/1941963 HTTP/1.1" from [::1]:54228 - 200 402B in 290.751µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54228 - 200 0B in 21.871µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54242 - 200 0B in 9.724µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54228 - 200 0B in 9.549µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54236 - 200 0B in 7.064µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54214 - 200 0B in 8.041µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54230 - 200 0B in 10.063µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:50242 - 200 0B in 7.297µs
+2026/08/03 07:51:37 "OPTIONS http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54242 - 200 0B in 12.039µs
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:50242 - 200 640B in 319.548µs
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54230 - 200 392B in 736.824µs
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1 HTTP/1.1" from [::1]:54236 - 200 640B in 2.098937ms
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1/events/stats HTTP/1.1" from [::1]:54228 - 200 392B in 3.402014ms
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54214 - 200 18461B in 332.442717ms
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1/files?page=1&limit=50 HTTP/1.1" from [::1]:54228 - 200 18461B in 271.757184ms
+2026/08/03 07:51:37 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54242 - 200 285B in 750.392867ms
+2026/08/03 07:51:38 "GET http://localhost:8080/api/projects/1/files/stats HTTP/1.1" from [::1]:54228 - 200 285B in 604.925136ms
+2026/08/03 07:52:37 Shutting down server...
+2026/08/03 07:52:37 Received signal terminated, initiating graceful shutdown...
+2026/08/03 07:52:37 Stopping all FIM Watchers...
+2026/08/03 07:52:37 Scheduler goroutine shutting down...
+2026/08/03 07:52:37 All FIM Watchers stopped
+2026/08/03 07:52:37 Alert dispatcher stopped
+2026/08/03 07:52:37 Server exited gracefully

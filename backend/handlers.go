@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arissupriy/ojs-monitor/backend/alerts"
+	"github.com/arissupriy/ojs-monitor/backend/alerts/channels"
+	"github.com/arissupriy/ojs-monitor/backend/reports"
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/go-chi/chi/v5"
@@ -1500,5 +1503,539 @@ func handleGetFIMWatcherStatus(w http.ResponseWriter, r *http.Request) {
 				"stopped": !isRunning,
 			},
 		},
+	})
+}
+
+// ============================================
+// Alert Configuration Handlers
+// ============================================
+
+// AlertConfigRequest represents an alert configuration request
+type AlertConfigRequest struct {
+	ChannelType  string `json:"channel_type"`
+	Config       map[string]interface{} `json:"config"`
+	Enabled      bool   `json:"enabled"`
+	MinRiskLevel string `json:"min_risk_level"`
+}
+
+// handleGetAlertConfigs returns all alert configurations for a project
+func handleGetAlertConfigs(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT id, project_id, channel_type, config_json, enabled, min_risk_level, created_at, updated_at
+		FROM alert_configs WHERE project_id = ?
+	`, projectID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to query alert configs: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	var configs []map[string]interface{}
+	for rows.Next() {
+		var id, projectID int
+		var channelType, configJSON, minRiskLevel string
+		var enabled bool
+		var createdAt, updatedAt int
+
+		if err := rows.Scan(&id, &projectID, &channelType, &configJSON, &enabled, &minRiskLevel, &createdAt, &updatedAt); err != nil {
+			continue
+		}
+
+		var config map[string]interface{}
+		json.Unmarshal([]byte(configJSON), &config)
+
+		configs = append(configs, map[string]interface{}{
+			"id":           id,
+			"project_id":   projectID,
+			"channel_type": channelType,
+			"config":       config,
+			"enabled":      enabled,
+			"min_risk_level": minRiskLevel,
+			"created_at":   createdAt,
+			"updated_at":   updatedAt,
+		})
+	}
+
+	respondJSON(w, http.StatusOK, configs)
+}
+
+// handleSetAlertConfig creates or updates an alert configuration
+func handleSetAlertConfig(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	var req AlertConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Validate channel type
+	validChannels := map[string]bool{"email": true, "slack": true, "webhook": true}
+	if !validChannels[req.ChannelType] {
+		respondError(w, http.StatusBadRequest, "Invalid channel type. Must be: email, slack, or webhook")
+		return
+	}
+
+	// Set default risk level
+	minRiskLevel := req.MinRiskLevel
+	if minRiskLevel == "" {
+		minRiskLevel = "HIGH"
+	}
+
+	// Convert config to JSON
+	configJSON, err := json.Marshal(req.Config)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid config: "+err.Error())
+		return
+	}
+
+	// Upsert configuration
+	_, err = db.Exec(`
+		INSERT INTO alert_configs (project_id, channel_type, config_json, enabled, min_risk_level, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+		ON CONFLICT(project_id, channel_type) DO UPDATE SET
+			config_json = excluded.config_json,
+			enabled = excluded.enabled,
+			min_risk_level = excluded.min_risk_level,
+			updated_at = strftime('%s', 'now')
+	`, projectID, req.ChannelType, string(configJSON), req.Enabled, minRiskLevel)
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to save alert config: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Alert config for %s updated", req.ChannelType),
+	})
+}
+
+// handleDeleteAlertConfig deletes an alert configuration
+func handleDeleteAlertConfig(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	channelType := r.URL.Query().Get("channel_type")
+	if channelType == "" {
+		respondError(w, http.StatusBadRequest, "channel_type is required")
+		return
+	}
+
+	result, err := db.Exec(`DELETE FROM alert_configs WHERE project_id = ? AND channel_type = ?`, projectID, channelType)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to delete alert config: "+err.Error())
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": rowsAffected > 0,
+		"message": fmt.Sprintf("Alert config for %s deleted", channelType),
+	})
+}
+
+// handleTestAlertConfig tests an alert configuration
+func handleTestAlertConfig(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	var req AlertConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Get project name
+	project, _ := getProjectByID(projectID)
+
+	// Create test alert
+	testAlert := alerts.Alert{
+		ProjectID:     projectID,
+		ProjectName:   project.Name,
+		EventType:    "TEST",
+		FilePath:     "/test/path/test.php",
+		FileHash:     "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+		FileMode:     "0644",
+		RiskLevel:    "HIGH",
+		Classification: "TEST",
+		ActorName:    "test_user",
+		Source:       "TEST_ALERT",
+		Timestamp:    time.Now(),
+	}
+
+	// Convert to JSON
+	alertJSON, _ := json.Marshal(testAlert)
+	configJSON, _ := json.Marshal(req.Config)
+
+	// Send test alert based on channel type
+	var sendErr error
+	switch req.ChannelType {
+	case "email":
+		channel := channels.NewEmailChannel()
+		sendErr = channel.Send(string(alertJSON), string(configJSON))
+	case "slack":
+		channel := channels.NewSlackChannel()
+		sendErr = channel.Send(string(alertJSON), string(configJSON))
+	case "webhook":
+		channel := channels.NewWebhookChannel()
+		sendErr = channel.Send(string(alertJSON), string(configJSON))
+	default:
+		respondError(w, http.StatusBadRequest, "Invalid channel type")
+		return
+	}
+
+	if sendErr != nil {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Test alert failed: %s", sendErr.Error()),
+		})
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Test alert sent via %s", req.ChannelType),
+	})
+}
+
+// handleGetAlertHistory returns alert history for a project
+func handleGetAlertHistory(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+
+	rows, err := db.Query(`
+		SELECT ah.id, ah.project_id, ah.event_id, ah.channel_type, ah.status,
+			   ah.error_message, ah.retry_count, ah.sent_at, ah.created_at,
+			   COALESCE(fe.event_type, '') as event_type, COALESCE(fe.file_path, '') as file_path
+		FROM alert_history ah
+		LEFT JOIN fim_events fe ON fe.id = ah.event_id
+		WHERE ah.project_id = ?
+		ORDER BY ah.created_at DESC
+		LIMIT ?
+	`, projectID, limit)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to query alert history: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	var history []map[string]interface{}
+	for rows.Next() {
+		var id, projectID, eventID, retryCount int
+		var channelType, status, errorMessage, eventType, filePath string
+		var sentAt, createdAt sql.NullInt64
+
+		if err := rows.Scan(&id, &projectID, &eventID, &channelType, &status, &errorMessage, &retryCount, &sentAt, &createdAt, &eventType, &filePath); err != nil {
+			continue
+		}
+
+		history = append(history, map[string]interface{}{
+			"id":            id,
+			"project_id":    projectID,
+			"event_id":      eventID,
+			"channel_type":  channelType,
+			"status":        status,
+			"error_message": errorMessage,
+			"retry_count":   retryCount,
+			"sent_at":       sentAt.Int64,
+			"created_at":    createdAt.Int64,
+			"event_type":    eventType,
+			"file_path":     filePath,
+		})
+	}
+
+	respondJSON(w, http.StatusOK, history)
+}
+
+// handleAcknowledgeAlert acknowledges an alert (marks as read/processed)
+func handleAcknowledgeAlert(w http.ResponseWriter, r *http.Request) {
+	alertIDStr := chi.URLParam(r, "alertId")
+	alertID, err := strconv.Atoi(alertIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid alert ID")
+		return
+	}
+
+	result, err := db.Exec(`UPDATE alert_history SET status = 'acknowledged' WHERE id = ?`, alertID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to acknowledge alert: "+err.Error())
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": rowsAffected > 0,
+		"message": "Alert acknowledged",
+	})
+}
+
+// ============================================
+// Report Handlers
+// ============================================
+
+// handleGetReports returns all scheduled reports for a project
+func handleGetReports(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT id, project_id, name, framework, format, schedule_cron, recipients, enabled, last_run, next_run, created_at
+		FROM scheduled_reports WHERE project_id = ?
+	`, projectID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to query reports: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	var reportList []map[string]interface{}
+	for rows.Next() {
+		var id, projectID int
+		var name, framework, format, scheduleCron, recipientsJSON string
+		var enabled bool
+		var lastRun, nextRun, createdAt sql.NullInt64
+
+		if err := rows.Scan(&id, &projectID, &name, &framework, &format, &scheduleCron, &recipientsJSON, &enabled, &lastRun, &nextRun, &createdAt); err != nil {
+			continue
+		}
+
+		var recipients []string
+		json.Unmarshal([]byte(recipientsJSON), &recipients)
+
+		reportList = append(reportList, map[string]interface{}{
+			"id":            id,
+			"project_id":     projectID,
+			"name":           name,
+			"framework":      framework,
+			"format":         format,
+			"schedule_cron":  scheduleCron,
+			"recipients":     recipients,
+			"enabled":        enabled,
+			"last_run":       lastRun.Int64,
+			"next_run":       nextRun.Int64,
+			"created_at":     createdAt.Int64,
+		})
+	}
+
+	respondJSON(w, http.StatusOK, reportList)
+}
+
+// handleCreateReport creates a new scheduled report
+func handleCreateReport(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	var req struct {
+		Name         string   `json:"name"`
+		Framework    string   `json:"framework"`
+		Format       string   `json:"format"`
+		ScheduleCron string   `json:"schedule_cron"`
+		Recipients   []string `json:"recipients"`
+		Enabled     bool     `json:"enabled"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Set defaults
+	if req.Framework == "" {
+		req.Framework = "soc2"
+	}
+	if req.Format == "" {
+		req.Format = "html"
+	}
+	if req.ScheduleCron == "" {
+		req.ScheduleCron = "0 6 * * 1" // Weekly on Monday at 6 AM
+	}
+
+	recipientsJSON, _ := json.Marshal(req.Recipients)
+
+	result, err := db.Exec(`
+		INSERT INTO scheduled_reports (project_id, name, framework, format, schedule_cron, recipients, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, projectID, req.Name, req.Framework, req.Format, req.ScheduleCron, string(recipientsJSON), req.Enabled)
+
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to create report: "+err.Error())
+		return
+	}
+
+	id, _ := result.LastInsertId()
+	respondJSON(w, http.StatusCreated, map[string]interface{}{
+		"id":      id,
+		"success": true,
+		"message": "Report scheduled successfully",
+	})
+}
+
+// handleGenerateReport generates a compliance report
+func handleGenerateReport(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	var req struct {
+		Framework  string `json:"framework"`
+		Format     string `json:"format"`
+		PeriodDays int    `json:"period_days"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid request body: "+err.Error())
+		return
+	}
+
+	// Set defaults
+	if req.Framework == "" {
+		req.Framework = "soc2"
+	}
+	if req.Format == "" {
+		req.Format = "json"
+	}
+	if req.PeriodDays <= 0 {
+		req.PeriodDays = 30 // Default 30 days
+	}
+
+	// Generate report
+	generator := reports.NewReportGenerator(db)
+	reportData, err := generator.GenerateFIMReport(projectID, reports.ReportType(req.Framework), req.PeriodDays)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to generate report: "+err.Error())
+		return
+	}
+
+	// Export based on format
+	var result string
+	contentType := "application/json"
+
+	switch req.Format {
+	case "csv":
+		result = generator.ExportToCSV(reportData)
+		contentType = "text/csv"
+	case "json":
+		result, err = generator.ExportToJSON(reportData)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "Failed to generate JSON: "+err.Error())
+			return
+		}
+		contentType = "application/json"
+	default:
+		// For HTML, return the data structure
+		jsonData, _ := json.Marshal(reportData)
+		result = string(jsonData)
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Write([]byte(result))
+}
+
+// handleVerifyIntegrity verifies the audit trail integrity
+func handleVerifyIntegrity(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	generator := reports.NewReportGenerator(db)
+	valid, errors, err := generator.VerifyEventChain(projectID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to verify integrity: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"valid":       valid,
+		"errors":      errors,
+		"verified_at": time.Now().Unix(),
+	})
+}
+
+// handleUpdateHashChain updates the hash chain for a project
+func handleUpdateHashChain(w http.ResponseWriter, r *http.Request) {
+	projectIDStr := chi.URLParam(r, "id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid project ID")
+		return
+	}
+
+	generator := reports.NewReportGenerator(db)
+	if err := generator.UpdateEventHashes(projectID); err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to update hash chain: "+err.Error())
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Hash chain updated successfully",
+	})
+}
+
+// handleDeleteReport deletes a scheduled report
+func handleDeleteReport(w http.ResponseWriter, r *http.Request) {
+	reportIDStr := chi.URLParam(r, "reportId")
+	reportID, err := strconv.Atoi(reportIDStr)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid report ID")
+		return
+	}
+
+	result, err := db.Exec(`DELETE FROM scheduled_reports WHERE id = ?`, reportID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "Failed to delete report: "+err.Error())
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"success": rowsAffected > 0,
+		"message": "Report deleted",
 	})
 }

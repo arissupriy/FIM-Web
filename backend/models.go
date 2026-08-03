@@ -76,26 +76,38 @@ type ProjectFile struct {
 	ModTime   int64
 	Status    string
 	FileType  string // "project" or "uploads"
+	// Permission tracking fields
+	FileMode          string `json:"file_mode,omitempty"` // Octal permission string (e.g., "0644")
+	FileUID           int    `json:"file_uid,omitempty"`    // Owner user ID
+	FileGID           int    `json:"file_gid,omitempty"`   // Owner group ID
+	PermissionChanges int    `json:"permission_changes"`   // Count of permission changes
 }
 
 type FIMEvent struct {
 	ID            int    `json:"id"`
 	ProjectID     int    `json:"project_id"`
 	FileID        *int   `json:"file_id,omitempty"` // Link to project_files.id
-	EventType     string `json:"event_type"`         // CREATED, MODIFIED, DELETED
+	EventType     string `json:"event_type"`         // CREATED, MODIFIED, DELETED, PERMISSION_CHANGED
 	FilePath      string `json:"file_path"`
 	FileHash      string `json:"file_hash,omitempty"`
-	ActorType     string `json:"actor_type,omitempty"` // OJS_USER, SYSTEM_USER, PROCESS
-	ActorID       string `json:"actor_id,omitempty"`
-	ActorName     string `json:"actor_name,omitempty"`
-	ActorDetails  string `json:"actor_details,omitempty"`
-	RiskLevel     string `json:"risk_level"`    // LOW, MEDIUM, HIGH, CRITICAL
+	// Permission tracking fields
+	FileMode     string `json:"file_mode,omitempty"`  // Current permission mode
+	FileUID      int    `json:"file_uid,omitempty"`   // Owner user ID
+	FileGID      int    `json:"file_gid,omitempty"`   // Owner group ID
+	OldFileMode  string `json:"old_file_mode,omitempty"`  // Previous permission mode (for permission change events)
+	OldFileUID   int    `json:"old_file_uid,omitempty"`   // Previous owner UID
+	OldFileGID   int    `json:"old_file_gid,omitempty"`   // Previous owner GID
+	ActorType    string `json:"actor_type,omitempty"` // OJS_USER, SYSTEM_USER, PROCESS
+	ActorID      string `json:"actor_id,omitempty"`
+	ActorName    string `json:"actor_name,omitempty"`
+	ActorDetails string `json:"actor_details,omitempty"`
+	RiskLevel    string `json:"risk_level"`    // LOW, MEDIUM, HIGH, CRITICAL
 	Classification string `json:"classification"` // TRUSTED, UNKNOWN_SOURCE, MODIFIED, DELETED
-	Source        string `json:"source"`        // WATCHER, RESCAN
-	Details       string `json:"details,omitempty"`
-	AlertSent     bool   `json:"alert_sent"`
-	Timestamp     string `json:"timestamp"`
-	CreatedAt     string `json:"created_at,omitempty"`
+	Source       string `json:"source"`        // WATCHER, RESCAN
+	Details      string `json:"details,omitempty"`
+	AlertSent    bool   `json:"alert_sent"`
+	Timestamp    string `json:"timestamp"`
+	CreatedAt    string `json:"created_at,omitempty"`
 }
 
 type FIMWatchPath struct {

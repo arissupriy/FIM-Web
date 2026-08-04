@@ -10,11 +10,27 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"golang.org/x/crypto/bcrypt"
+
+	infraauth "ojs-monitor/backend/internal/infrastructure/auth"
+	"ojs-monitor/backend/internal/infrastructure/database/sqlite"
+	infrahttp "ojs-monitor/backend/internal/infrastructure/http"
+	"ojs-monitor/backend/internal/infrastructure/http/handlers"
+	appauth "ojs-monitor/backend/internal/application/usecase/auth"
+	"ojs-monitor/backend/internal/application/usecase/project"
+	"ojs-monitor/backend/internal/application/usecase/scan"
+	"ojs-monitor/backend/internal/application/usecase/fim"
+	"ojs-monitor/backend/internal/application/usecase/job"
+	"ojs-monitor/backend/internal/application/usecase/file"
+	"ojs-monitor/backend/internal/templates/ojs"
+	"ojs-monitor/backend/internal/wire"
 )
 
 func main() {
 	// Initialize Database
 	initDB()
+
+	// Initialize repositories (for wire package access)
+	wire.Init(db)
 
 	// Seed default admin if none exists
 	if err := SeedDefaultAdmin(); err != nil {
@@ -30,16 +46,16 @@ func main() {
 			}
 			username := os.Args[2]
 			password := os.Args[3]
-			
+
 			hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			if err != nil {
 				log.Fatalf("Failed to hash password: %v", err)
 			}
-			
+
 			if err := CreateAdmin(username, string(hash)); err != nil {
 				log.Fatalf("Failed to create admin: %v", err)
 			}
-			
+
 			fmt.Printf("Admin '%s' successfully created.\n", username)
 			return
 		}
@@ -51,51 +67,68 @@ func main() {
 	// Restore FIM watchers for active projects (after worker is ready)
 	go RestoreWatchersOnStartup()
 
-	// Initialize Router
-	r := chi.NewRouter()
+	// Wire up clean architecture handlers
+	sqliteDB := sqlite.NewDB(db)
 
-	// Middleware
+	// Repositories
+	projectRepo := sqlite.NewProjectRepository(sqliteDB)
+	jobRepo := sqlite.NewJobRepository(sqliteDB)
+	fileRepo := sqlite.NewFileRepository(sqliteDB)
+	fimEventRepo := sqlite.NewFIMEventRepository(sqliteDB)
+	authRepo := sqlite.NewAuthRepository(sqliteDB)
+
+	// Use cases
+	projectUC := project.New(projectRepo)
+	scanUC := scan.New(projectRepo, jobRepo, fileRepo)
+	fimUC := fim.New(fimEventRepo)
+	jobUC := job.New(jobRepo)
+	fileUC := file.New(fileRepo, projectRepo)
+	authUC := appauth.New(authRepo)
+
+	// Auth service
+	authService := infraauth.New(infraauth.DefaultConfig())
+
+	// Handlers
+	projectHandler := handlers.NewProjectHandler(projectUC)
+	scanHandler := handlers.NewScanHandler(scanUC)
+	fimHandler := handlers.NewFIMHandler(projectRepo, fimEventRepo)
+	jobHandler := handlers.NewJobHandler(jobUC)
+	fileHandler := handlers.NewFileHandler(fileUC)
+	authHandler := handlers.NewAuthHandler(authUC, authService)
+
+	// OJS template handler
+	ojsHandler := ojs.NewHandler(projectRepo, fileRepo)
+
+	// Create router with auth
+	router := infrahttp.NewRouter(infrahttp.RouterConfig{
+		ProjectHandler: projectHandler,
+		ScanHandler:    scanHandler,
+		FIMHandler:     fimHandler,
+		AuthHandler:    authHandler,
+		JobHandler:     jobHandler,
+		FileHandler:    fileHandler,
+		OJSHandler:     ojsHandler,
+		ValidateToken:  authService.ValidateTokenFunc(),
+	})
+
+	// Wrap with Chi router for additional middleware
+	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins: []string{"http://localhost:3000"}, // Allow Next.js frontend
+		AllowedOrigins: []string{"http://localhost:3000"},
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 	}))
 
-	// API Routes
-	r.Route("/api", func(r chi.Router) {
-		r.Post("/login", handleLogin)
-		
-		// Protected Routes
-		r.Group(func(r chi.Router) {
-			r.Use(AuthMiddleware)
-			r.Get("/projects", handleGetProjects)
-			r.Get("/projects/{id}", handleGetProject)
-			r.Post("/projects", handleAddProject)
-			r.Put("/projects/{id}", handleUpdateProject)
-			r.Post("/projects/{id}/scan", handleStartScan)
-			r.Post("/projects/{id}/baseline/reset", handleResetBaseline) // Reset baseline
-			r.Post("/projects/{id}/integrity-scan", handleStartIntegrityScan) // Manual integrity scan
-			r.Post("/projects/{id}/test-connection", handleTestConnection)
-			r.Get("/projects/{id}/jobs", handleGetProjectJobs)
-			r.Get("/projects/{id}/details", handleGetProjectDetails)
-			r.Delete("/jobs/{id}", handleCancelJob)
-			r.Get("/audit/{id}", handleAuditProject)
-			r.Get("/audit/{id}/files", handleGetProjectFiles) // old endpoint for summary
-			r.Get("/projects/{id}/files", handleGetProjectFilesPaginated) // new paginated endpoint
-			r.Get("/projects/{id}/files/{fileId}", handleGetFileDetail) // file detail endpoint
-			r.Get("/projects/{id}/files/{fileId}/ojs-relations", handleGetFileOJSRelations) // OJS relations
-			r.Get("/projects/{id}/files/stats", handleGetFIMStats) // FIM statistics
-			r.Get("/projects/{id}/orphan-files", handleGetOrphanFiles) // orphan files endpoint
-			r.Get("/projects/{id}/events", handleGetFIMEvents) // FIM forensic events
-			r.Get("/projects/{id}/events/stats", handleGetFIMEventStats) // FIM event statistics
-			r.Post("/projects/{id}/watcher/start", handleStartFIMWatcher) // start FIM watcher
-			r.Post("/projects/{id}/watcher/stop", handleStopFIMWatcher) // stop FIM watcher
-			r.Get("/projects/{id}/watcher/status", handleGetFIMWatcherStatus) // watcher status
-			r.Get("/logs", handleGetLogs)
-		})
-	})
+	// Mount the new API router
+	r.Mount("/", router)
+
+	// Suppress unused variable warnings
+	_ = fimUC
+	_ = jobUC
+	_ = fileUC
+	_ = authUC
 
 	// Start Server
 	port := ":8080"

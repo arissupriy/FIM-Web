@@ -1,13 +1,15 @@
 package main
 
 import (
+	"context"
 	"database/sql"
-	"encoding/json"
-	"fmt"
 	"log"
 
 	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
+
+	"ojs-monitor/backend/internal/domain/models"
+	"ojs-monitor/backend/internal/wire"
 )
 
 var db *sql.DB
@@ -233,130 +235,126 @@ func runMigrations() {
 }
 
 
+// getProjects returns all projects using repository
 func getProjects() ([]Project, error) {
-	rows, err := db.Query("SELECT id, name, description, template, app_path, files_path, blacklist_exts, whitelist_paths, db_host, db_user, db_pass, db_name, status, COALESCE(baseline_total, 0), COALESCE(baseline_processed, 0), COALESCE(error_message, ''), COALESCE(rescan_interval, 10), COALESCE(baseline_at, 0), COALESCE(watcher_status, 'stopped'), COALESCE(integrity_scan_enabled, 0), COALESCE(last_integrity_scan, 0) FROM projects")
+	ctx := context.Background()
+	projects, err := wire.GetProjects(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var projects []Project
-	for rows.Next() {
-		var p Project
-		var appPathJSON, filesPathJSON, blacklistJSON, whitelistJSON string
-
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Template, &appPathJSON, &filesPathJSON, &blacklistJSON, &whitelistJSON, &p.DBHost, &p.DBUser, &p.DBPass, &p.DBName, &p.Status, &p.BaselineTotal, &p.BaselineProcessed, &p.ErrorMessage, &p.RescanInterval, &p.BaselineAt, &p.WatcherStatus, &p.IntegrityScanEnabled, &p.LastIntegrityScan); err != nil {
-			return nil, err
-		}
-
-		json.Unmarshal([]byte(appPathJSON), &p.AppPaths)
-		json.Unmarshal([]byte(filesPathJSON), &p.FilesPaths)
-		json.Unmarshal([]byte(blacklistJSON), &p.BlacklistExts)
-		json.Unmarshal([]byte(whitelistJSON), &p.WhitelistPaths)
-
-		if p.AppPaths == nil { p.AppPaths = []string{} }
-		if p.FilesPaths == nil { p.FilesPaths = []string{} }
-		if p.BlacklistExts == nil { p.BlacklistExts = []string{"php", "phtml", "sh"} }
-		if p.WhitelistPaths == nil { p.WhitelistPaths = []string{} }
-		if p.RescanInterval == 0 { p.RescanInterval = 10 } // Default 10 minutes (for backward compat)
-		if p.WatcherStatus == "" { p.WatcherStatus = "stopped" }
-
-		projects = append(projects, p)
+	result := make([]Project, 0, len(projects))
+	for _, p := range projects {
+		result = append(result, toLegacyProject(p))
 	}
-	return projects, nil
+	return result, nil
+}
+
+// toLegacyProject converts domain Project to legacy Project
+func toLegacyProject(p *models.Project) Project {
+	if p == nil {
+		return Project{}
+	}
+	return Project{
+		ID: p.ID, Name: p.Name, Description: p.Description, Template: p.Template,
+		AppPaths: p.AppPaths, FilesPaths: p.FilesPaths,
+		BlacklistExts: p.BlacklistExts, WhitelistPaths: p.WhitelistPaths,
+		DBHost: p.DBHost, DBUser: p.DBUser, DBPass: p.DBPass, DBName: p.DBName,
+		Status: p.Status, BaselineTotal: p.BaselineTotal, BaselineProcessed: p.BaselineProcessed,
+		BaselineAt: p.BaselineAt, WatcherStatus: p.WatcherStatus,
+		IntegrityScanEnabled: p.IntegrityScanEnabled, LastIntegrityScan: p.LastIntegrityScan,
+		ErrorMessage: p.ErrorMessage, Configured: p.Configured, RescanInterval: p.RescanInterval,
+	}
 }
 
 func getProjectByID(id int) (Project, error) {
-	projects, err := getProjects()
+	ctx := context.Background()
+	p, err := wire.GetProjectByID(ctx, id)
 	if err != nil {
 		return Project{}, err
 	}
-	for _, p := range projects {
-		if p.ID == id {
-			return p, nil
-		}
-	}
-	return Project{}, fmt.Errorf("project not found")
+	return toLegacyProject(p), nil
 }
 
 func addProject(p Project) (int, error) {
-	if p.Template == "" {
-		p.Template = "OJS 3.x"
+	ctx := context.Background()
+	// Convert to domain model
+	dm := &models.Project{
+		Name:           p.Name,
+		Description:    p.Description,
+		Template:       p.Template,
+		AppPaths:       p.AppPaths,
+		FilesPaths:     p.FilesPaths,
+		BlacklistExts:  p.BlacklistExts,
+		WhitelistPaths: p.WhitelistPaths,
+		DBHost:         p.DBHost,
+		DBUser:         p.DBUser,
+		DBPass:         p.DBPass,
+		DBName:         p.DBName,
 	}
-	appPathJSON, _ := json.Marshal(p.AppPaths)
-	filesPathJSON, _ := json.Marshal(p.FilesPaths)
-	blacklistJSON, _ := json.Marshal(p.BlacklistExts)
-	whitelistJSON, _ := json.Marshal(p.WhitelistPaths)
-
-	result, err := db.Exec("INSERT INTO projects (name, description, template, app_path, files_path, blacklist_exts, whitelist_paths, db_host, db_user, db_pass, db_name, status, baseline_total, baseline_processed, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unconfigured', 0, 0, '')",
-		p.Name, p.Description, p.Template, string(appPathJSON), string(filesPathJSON), string(blacklistJSON), string(whitelistJSON), p.DBHost, p.DBUser, p.DBPass, p.DBName)
+	if dm.Template == "" {
+		dm.Template = "OJS 3.x"
+	}
+	id, err := wire.CreateProject(ctx, dm)
 	if err != nil {
 		return 0, err
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	
-	return int(id), nil
+	return id, nil
 }
 
 func updateProject(p Project) error {
-	appPathJSON, _ := json.Marshal(p.AppPaths)
-	filesPathJSON, _ := json.Marshal(p.FilesPaths)
-	blacklistJSON, _ := json.Marshal(p.BlacklistExts)
-	whitelistJSON, _ := json.Marshal(p.WhitelistPaths)
-
-	// Determine status based on configuration completeness
-	newStatus := "unconfigured"
-	if p.DBHost != "" && p.DBUser != "" && p.DBName != "" && len(p.AppPaths) > 0 && p.AppPaths[0] != "" {
-		newStatus = "pending_baseline"
+	ctx := context.Background()
+	// Convert to domain model
+	dm := &models.Project{
+		ID:             p.ID,
+		Name:           p.Name,
+		Description:    p.Description,
+		Template:       p.Template,
+		AppPaths:       p.AppPaths,
+		FilesPaths:     p.FilesPaths,
+		BlacklistExts:  p.BlacklistExts,
+		WhitelistPaths: p.WhitelistPaths,
+		DBHost:         p.DBHost,
+		DBUser:         p.DBUser,
+		DBPass:         p.DBPass,
+		DBName:         p.DBName,
+		RescanInterval: p.RescanInterval,
 	}
-
-	_, err := db.Exec("UPDATE projects SET name=?, description=?, template=?, app_path=?, files_path=?, blacklist_exts=?, whitelist_paths=?, db_host=?, db_user=?, db_pass=?, db_name=?, status=?, rescan_interval=? WHERE id=?",
-		p.Name, p.Description, p.Template, string(appPathJSON), string(filesPathJSON), string(blacklistJSON), string(whitelistJSON), p.DBHost, p.DBUser, p.DBPass, p.DBName, newStatus, p.RescanInterval, p.ID)
-
-	return err
+	return wire.UpdateProject(ctx, dm)
 }
 
 func CreateAdmin(username, passwordHash string) error {
-	_, err := db.Exec("INSERT INTO admins (username, password_hash) VALUES (?, ?)", username, passwordHash)
-	return err
+	ctx := context.Background()
+	return wire.CreateAdminUser(ctx, username, passwordHash)
 }
 
 func GetAdminByUsername(username string) (Admin, error) {
-	var a Admin
-	err := db.QueryRow("SELECT id, username, password_hash FROM admins WHERE username = ?", username).
-		Scan(&a.ID, &a.Username, &a.PasswordHash)
-	return a, err
+	ctx := context.Background()
+	a, err := wire.GetAdminByUsername(ctx, username)
+	if err != nil {
+		return Admin{}, err
+	}
+	return Admin{ID: a.ID, Username: a.Username, PasswordHash: a.PasswordHash}, nil
 }
 
 func LogActivity(adminID int, action, target string) error {
-	_, err := db.Exec("INSERT INTO audit_logs (admin_id, action, target) VALUES (?, ?, ?)", adminID, action, target)
-	return err
+	ctx := context.Background()
+	return wire.LogActivity(ctx, adminID, action, target)
 }
 
 func GetAuditLogs() ([]AuditLog, error) {
-	rows, err := db.Query(`
-		SELECT l.id, l.admin_id, a.username, l.action, l.target, l.timestamp
-		FROM audit_logs l
-		JOIN admins a ON l.admin_id = a.id
-		ORDER BY l.timestamp DESC LIMIT 100
-	`)
+	ctx := context.Background()
+	logs, err := wire.GetAuditLogs(ctx, 100)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var logs []AuditLog
-	for rows.Next() {
-		var l AuditLog
-		if err := rows.Scan(&l.ID, &l.AdminID, &l.AdminName, &l.Action, &l.Target, &l.Timestamp); err != nil {
-			return nil, err
-		}
-		logs = append(logs, l)
+	result := make([]AuditLog, 0, len(logs))
+	for _, l := range logs {
+		result = append(result, AuditLog{
+			ID: l.ID, AdminID: l.AdminID, AdminName: l.AdminName,
+			Action: l.Action, Target: l.Target, Timestamp: l.Timestamp,
+		})
 	}
-	return logs, nil
+	return result, nil
 }
 
 // SeedDefaultAdmin creates or updates the default admin
@@ -401,64 +399,44 @@ func SeedDefaultAdmin() error {
 }
 
 func getProjectFiles(projectID int) (map[string]ProjectFile, error) {
-	rows, err := db.Query("SELECT id, project_id, file_path, hash, file_size, mod_time, status, COALESCE(file_mode, ''), COALESCE(file_uid, 0), COALESCE(file_gid, 0), COALESCE(permission_changes, 0) FROM project_files WHERE project_id=?", projectID)
+	ctx := context.Background()
+	files, err := wire.GetProjectFiles(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	files := make(map[string]ProjectFile)
-	for rows.Next() {
-		var pf ProjectFile
-		if err := rows.Scan(&pf.ID, &pf.ProjectID, &pf.FilePath, &pf.Hash, &pf.FileSize, &pf.ModTime, &pf.Status, &pf.FileMode, &pf.FileUID, &pf.FileGID, &pf.PermissionChanges); err != nil {
-			return nil, err
+	// Convert map[string]*models.ProjectFile to map[string]ProjectFile
+	result := make(map[string]ProjectFile)
+	for k, v := range files {
+		result[k] = ProjectFile{
+			ID: v.ID, ProjectID: v.ProjectID, FilePath: v.FilePath,
+			Hash: v.Hash, FileSize: v.FileSize, ModTime: v.ModTime,
+			Status: v.Status, FileType: v.FileType,
+			FileMode: v.FileMode, FileUID: v.FileUID, FileGID: v.FileGID,
+			PermissionChanges: v.PermissionChanges,
 		}
-		files[pf.FilePath] = pf
 	}
-	return files, nil
+	return result, nil
 }
 
 func batchUpsertProjectFiles(files []ProjectFile) error {
-	if len(files) == 0 {
-		return nil
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	// [P1-06] Include permission fields in INSERT
-	stmtInsert, err := tx.Prepare("INSERT OR IGNORE INTO project_files (project_id, file_path, hash, file_size, mod_time, status, file_type, file_mode, file_uid, file_gid, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))")
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer stmtInsert.Close()
-
-	// [P1-06] Include permission fields in UPDATE
-	stmtUpdate, err := tx.Prepare("UPDATE project_files SET hash=?, file_size=?, mod_time=?, status=?, file_mode=?, file_uid=?, file_gid=?, updated_at=strftime('%s', 'now') WHERE id=?")
-	if err != nil {
-		tx.Rollback()
-		return err
-	}
-	defer stmtUpdate.Close()
-
-	for _, f := range files {
+	ctx := context.Background()
+	// Convert to domain models
+	dmFiles := make([]*models.ProjectFile, 0, len(files))
+	for i := range files {
+		f := &files[i]
 		fileType := f.FileType
 		if fileType == "" {
 			fileType = "project"
 		}
-		if f.ID == 0 {
-			// INSERT OR IGNORE - skip if already exists (handles orphan re-detection)
-			_, err = tx.Stmt(stmtInsert).Exec(f.ProjectID, f.FilePath, f.Hash, f.FileSize, f.ModTime, f.Status, fileType, f.FileMode, f.FileUID, f.FileGID)
-		} else {
-			_, err = stmtUpdate.Exec(f.Hash, f.FileSize, f.ModTime, f.Status, f.FileMode, f.FileUID, f.FileGID, f.ID)
-		}
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
+		dmFiles = append(dmFiles, &models.ProjectFile{
+			ID: f.ID, ProjectID: f.ProjectID, FilePath: f.FilePath,
+			Hash: f.Hash, FileSize: f.FileSize, ModTime: f.ModTime,
+			Status: f.Status, FileType: fileType,
+			FileMode: f.FileMode, FileUID: f.FileUID, FileGID: f.FileGID,
+			PermissionChanges: f.PermissionChanges,
+		})
 	}
-	return tx.Commit()
+	return wire.BatchUpsertFiles(ctx, dmFiles)
 }
 
 func batchDeleteProjectFiles(ids []int) error {

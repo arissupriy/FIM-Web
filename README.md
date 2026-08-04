@@ -178,18 +178,39 @@ make build
 
 ```bash
 # Database management
-./manage migrate              # Run migrations
-./manage seed               # Seed default admin
-./manage add-admin <u> <p>  # Create admin user
-./manage status             # Show system status
+./manage migrate                     # Run migrations
+./manage seed                      # Seed default admin
+./manage add-admin <username> <password>  # Create admin user
+./manage status                    # Show system status
 
-# Server & Worker
-./fim-server                # Start HTTP API server
-./worker                    # Start background worker
+# Server management (daemon mode)
+./manage server:start             # Start server + worker
+./manage server:stop              # Stop server + worker
+./manage server:restart           # Restart all services
+./manage server:status           # Show service status
+
+# Manual mode (separate terminals)
+./fim-server                      # Start HTTP API server
+./worker                         # Start background worker
 
 # Help
-./manage help              # Show all commands
+./manage help                    # Show all commands
 ```
+
+---
+
+## Server Management
+
+The CLI manages server and worker processes using **PID files**:
+
+| Command | Description |
+|---------|-------------|
+| `manage server:start` | Start server + worker (daemon) |
+| `manage server:stop` | Stop gracefully with SIGTERM |
+| `manage server:restart` | Restart all services |
+| `manage server:status` | Show running processes |
+
+PID files: `.server.pid`, `.worker.pid`
 
 ---
 

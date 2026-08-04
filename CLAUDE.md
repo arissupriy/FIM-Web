@@ -38,7 +38,9 @@
 backend/
 ├── cmd/                        # Entry points (binaries)
 │   ├── manage/                 # CLI management tool
-│   │   └── main.go
+│   │   ├── main.go
+│   │   └── process/           # PID management for server control
+│   │       └── process.go
 │   ├── server/                 # HTTP API server
 │   │   └── main.go
 │   └── worker/                 # Background worker
@@ -110,7 +112,7 @@ Implements domain interfaces with **concrete technology**:
 
 | Binary | Purpose | Entry Point |
 |--------|---------|-------------|
-| `manage` | CLI tool for DB management | `cmd/manage/` |
+| `manage` | CLI tool for DB management & server control | `cmd/manage/` |
 | `fim-server` | HTTP API server | `cmd/server/` |
 | `worker` | Background job processor | `cmd/worker/` |
 
@@ -135,7 +137,23 @@ make build
 ./manage seed  # Creates admin/admin123
 ```
 
-### 2. Start Services
+### 2. Start Services (Daemon Mode)
+
+```bash
+# Start server + worker together (daemon mode)
+./manage server:start
+
+# Check service status
+./manage server:status
+
+# Stop services
+./manage server:stop
+
+# Restart services
+./manage server:restart
+```
+
+### 3. Or Start Separately (Manual Mode)
 
 ```bash
 # Terminal 1: Start API server
@@ -145,7 +163,7 @@ make build
 ./worker
 ```
 
-### 3. Check Status
+### 4. Check Status
 
 ```bash
 ./manage status
@@ -153,15 +171,36 @@ make build
 
 ---
 
+## Server Management
+
+The `manage` CLI controls server and worker processes using **PID files**:
+
+| Command | Description |
+|---------|-------------|
+| `manage server:start` | Start server + worker (daemon) |
+| `manage server:stop` | Stop server + worker gracefully |
+| `manage server:restart` | Restart all services |
+| `manage server:status` | Show service status |
+
+PID files are stored in the same directory as binaries:
+- `.server.pid` - Server process ID
+- `.worker.pid` - Worker process ID
+
+---
+
 ## Makefile Targets
 
 ```bash
-make build        # Build all binaries (manage, fim-server, worker)
-make clean        # Remove binaries
-make test         # Run tests
-make test-race    # Run tests with race detector
-make status       # Check system status
-make migrate      # Run migrations
+make build              # Build all binaries
+make clean            # Remove binaries
+make test             # Run tests
+make test-race        # Run tests with race detector
+make status           # Show system status
+make migrate          # Run migrations
+make server:start     # Start server + worker
+make server:stop      # Stop server + worker
+make server:restart   # Restart services
+make server:status    # Show service status
 ```
 
 ---

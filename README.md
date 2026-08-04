@@ -1,38 +1,92 @@
-# OJS Monitor
+# FIM Monitor
 
-A self-hosted file integrity monitoring (FIM) and database audit system for Open Journal Systems (OJS).
+**A Generic File Integrity Monitoring Platform** with CMS-specific templates.
+
+> OJS Monitor is the first dedicated template. The platform is designed to support multiple CMS/systems (WordPress, Drupal, custom) via template plugins.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Go](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black.svg)
+
+---
+
+## Platform Concept
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     FIM MONITOR PLATFORM                       │
+│              (Generic File Integrity Monitoring)                  │
+├─────────────────────────────────────────────────────────────┤
+│  Core Engine (Platform-wide)                                   │
+│  ├── File Scanner (Hash, Permission, Metadata)                 │
+│  ├── FIM Watcher (inotifywait)                                │
+│  ├── Background Worker (Job Queue)                             │
+│  └── Database (SQLite - Platform Schema)                       │
+├─────────────────────────────────────────────────────────────┤
+│  Templates/Plugins (CMS-Specific Detection)                   │
+│  ├── OJS Template       → submission_files, users, journals   │
+│  ├── WordPress Template → wp_posts, wp_uploads (future)       │
+│  └── Custom Template   → (user-defined rules)                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Features
 
 ### File Integrity Monitoring (FIM)
 - **Baseline Scanning**: Create initial file baseline with SHA-256 hashes
 - **Change Detection**: Detect added, modified, and deleted files
-- **Whitelist Support**: Exclude specific paths from monitoring
-- **Extension Blacklist**: Ignore files by extension (e.g., `.php`, `.phtml`)
-- **Orphan Detection**: Identify uploaded files not registered in OJS database
+- **Permission Tracking**: Monitor file mode, UID, GID changes
+- **Real-time Monitoring**: Using inotifywait for instant detection
+- **Whitelist/Blacklist**: Exclude specific paths or extensions
 
-### Database Auditing (OJS)
-- **User Activity**: Track new users, validated users, disabled accounts
-- **Admin Monitoring**: Count active administrators
-- **Self-Registration Audit**: Detect insecure self-registration settings
-- **Upload Tracking**: Monitor uploads by newly registered users
+### CMS-Specific Templates
+- **OJS Template**: Orphan detection, user metrics, journal statistics
+- **Extensible**: Add new CMS support via template interface
+- **Generic Core**: Scanner/watcher work without CMS templates
 
 ### Async Job Processing
 - **Background Worker**: Non-blocking scan jobs
 - **Progress Tracking**: Real-time scan progress updates
-- **Automatic Rescan**: Scheduled rescans every 10 minutes
-- **Graceful Shutdown**: Clean worker shutdown on SIGINT/SIGTERM
+- **Scheduled Scans**: Daily integrity scans
+- **Graceful Shutdown**: Clean worker shutdown on signals
 
 ### Security
 - **JWT Authentication**: Secure admin login
 - **Audit Logging**: Track all admin actions
-- **Race Condition Protection**: Database-level locking for concurrent jobs
+- **Race Condition Protection**: Database-level locking
+
+---
 
 ## Architecture
+
+### Clean Architecture
+
+```
+backend/
+├── cmd/                    # Entry points
+│   ├── manage/            # CLI tool
+│   ├── server/             # HTTP API server
+│   └── worker/             # Background worker
+│
+├── pkg/                    # Shared packages
+│   └── response/          # HTTP response helpers
+│
+└── internal/              # Application code
+    ├── domain/            # Business rules (models, interfaces)
+    ├── application/        # Use cases
+    ├── infrastructure/     # Technology implementations
+    │   ├── database/      # SQLite/MySQL
+    │   ├── http/           # HTTP handlers
+    │   ├── scanner/        # File scanning
+    │   ├── watcher/        # FIM watcher
+    │   ├── worker/         # Background worker
+    │   └── templates/      # CMS templates
+    └── wire/               # Dependency injection
+```
+
+### System Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -40,283 +94,243 @@ A self-hosted file integrity monitoring (FIM) and database audit system for Open
 │   (Next.js)     │     │   (chi router)  │     │   (metadata)    │
 └─────────────────┘     └────────┬────────┘     └─────────────────┘
                                  │
-                                 │ OJS Metrics
-                                 ▼
-                        ┌─────────────────┐
-                        │   MySQL/OJS     │
-                        │   Database      │
-                        └─────────────────┘
+                    ┌────────────┼────────────┐
+                    │ OJS Metrics│ CMS-specific│
+                    ▼            ▼            ▼
+             ┌──────────┐ ┌──────────┐ ┌──────────┐
+             │   OJS    │ │WordPress │ │ Custom   │
+             │ Template │ │ Template │ │ Template │
+             └────┬─────┘ └────┬─────┘ └────┬─────┘
+                  │             │             │
+                  └─────────────┴─────────────┘
+                              │
+                              ▼
+                      ┌─────────────┐
+                      │ CMS MySQL   │
+                      │ Databases   │
+                      └─────────────┘
 ```
+
+---
 
 ## Tech Stack
 
 | Component | Technology |
 |-----------|------------|
-| Frontend | Next.js 16 (Turbopack), React, Tailwind CSS, Lucide Icons |
+| Frontend | Next.js 16 (Turbopack), React, Tailwind CSS |
 | Backend | Go 1.21+, chi router, bcrypt, jwt |
 | Local DB | SQLite (WAL mode) |
-| Target DB | MySQL 5.7+ (OJS database) |
+| Target DB | MySQL 5.7+ (CMS databases) |
+
+---
 
 ## Prerequisites
 
 - **Go** 1.21 or higher
 - **Node.js** 18 or higher
-- **MySQL** 5.7+ (for OJS database access)
-- **Git**
+- **MySQL** 5.7+ (for CMS database access)
+- **Linux** with inotifywait (for real-time monitoring)
+
+---
 
 ## Quick Start
 
-### 1. Clone the Repository
+### 1. Clone and Build
 
 ```bash
-git clone https://github.com/your-repo/ojs-monitor.git
-cd ojs-monitor
+git clone https://github.com/your-repo/fim-monitor.git
+cd fim-monitor
+make build
 ```
 
-### 2. Configure Environment
+### 2. Setup Database
 
 ```bash
-# Edit .env in root directory
-cp .env .env  # .env already exists, edit as needed
-nano .env
+# Run migrations
+./manage migrate
+
+# Create admin user
+./manage add-admin admin secretpassword
+
+# Or use default admin
+./manage seed  # admin / admin123
 ```
 
-### 3. Start Backend & Frontend
+### 3. Start Services
 
 ```bash
-# Start backend server (auto-builds and runs)
-make start
+# Terminal 1: API Server
+./fim-server
 
-# Check status
-make status
-
-# View logs
-make logs
-
-# Start frontend (in another terminal)
-make dev
-
-# Stop backend
-make stop
+# Terminal 2: Background Worker
+./worker
 ```
 
-The backend runs on `http://localhost:8080`.
-The frontend runs on `http://localhost:3000`.
+### 4. Access
 
-### 4. Login
+- **API Server**: http://localhost:8080
+- **Frontend**: http://localhost:3000 (if running)
+- **Default Login**: admin / admin123
 
-Default credentials:
-- **Username**: `admin`
-- **Password**: `admin123`
+---
 
-> ⚠️ Change the default password immediately in production!
+## CLI Commands
+
+```bash
+# Database management
+./manage migrate              # Run migrations
+./manage seed               # Seed default admin
+./manage add-admin <u> <p>  # Create admin user
+./manage status             # Show system status
+
+# Server & Worker
+./fim-server                # Start HTTP API server
+./worker                    # Start background worker
+
+# Help
+./manage help              # Show all commands
+```
+
+---
 
 ## Project Setup
 
 ### Create a New Project
 
-1. Click **"Add Project"** on the dashboard
-2. Enter project name and description
+1. Login to the dashboard
+2. Click **"Add Project"**
 3. Configure:
-   - **App Path**: Path to OJS installation (e.g., `/var/www/ojs`)
-   - **Files Path**: Path to OJS uploads (e.g., `/var/www/ojs/files`)
-   - **Database Host**: OJS MySQL host
-   - **Database Name**: OJS database name
-   - **Database User**: MySQL username
-   - **Database Password**: MySQL password
+   - **Name**: Project identifier
+   - **Template**: OJS (or future templates)
+   - **App Path**: Path to CMS installation
+   - **Files Path**: Path to CMS uploads
+   - **Database**: CMS MySQL connection
 
-### Start Initial Scan
+### Start Baseline Scan
 
 1. Open the project
 2. Click **"Start Scan"**
-3. The scan runs in background - progress shown in Jobs tab
+3. Monitor progress in Jobs tab
 
-## Deployment
+---
 
-### Production Build
+## Template System
 
-#### Backend
+### How Templates Work
 
-```bash
-cd backend
+Templates provide CMS-specific detection:
 
-# Build for Linux AMD64
-make build-linux
+- **Orphan Detection**: Files not in CMS database
+- **User Metrics**: New users, validated users, etc.
+- **CMS Statistics**: Journal counts, submission counts
 
-# Copy to server
-scp server-linux user@server:/opt/ojs-monitor/server
-```
+### Available Templates
 
-#### Frontend
+| Template | Status | Features |
+|----------|--------|----------|
+| OJS | ✅ Ready | Full support |
+| WordPress | 🔜 Future | Pending |
+| Drupal | 🔜 Future | Pending |
+| Custom | 🔜 Future | User-defined |
 
-```bash
-cd frontend
+### Adding a Template
 
-# Build for production
-npm run build
+1. Create `internal/templates/<name>/`
+2. Implement `Template` interface
+3. Register in application
 
-# The output is in .next/
-# Deploy to Nginx/Caddy/Vercel
-```
-
-### systemd Service (Backend)
-
-Create `/etc/systemd/system/ojs-monitor.service`:
-
-```ini
-[Unit]
-Description=OJS Monitor Backend
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=/opt/ojs-monitor
-ExecStart=/opt/ojs-monitor/server
-Restart=always
-RestartSec=5
-EnvironmentFile=/opt/ojs-monitor/.env
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable ojs-monitor
-sudo systemctl start ojs-monitor
-```
-
-### Nginx Configuration (Frontend)
-
-```nginx
-server {
-    listen 80;
-    server_name ojs-monitor.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    location /api {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-    }
-}
-```
-
-### Docker (Optional)
-
-Create `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-
-services:
-  backend:
-    build: ./backend
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./backend/data:/app/data
-      - /var/www/ojs:/var/www/ojs:ro
-    depends_on:
-      - mysql
-    env_file:
-      - ./backend/.env
-
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-
-  mysql:
-    image: mysql:5.7
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: ojs
-      MYSQL_USER: ojs_user
-      MYSQL_PASSWORD: your_password
-    volumes:
-      - mysql_data:/var/lib/mysql
-
-volumes:
-  mysql_data:
-```
+---
 
 ## Configuration
 
 ### Environment Variables
 
-Create a `.env` file (copy from `.env.example`) to configure the backend:
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Backend server port |
-| `HOST` | `0.0.0.0` | Server bind address |
-| `SECRET_KEY` | (required) | JWT signing secret |
-| `DB_PATH` | `./data/ojs_monitor.db` | SQLite database path |
-| `LOCALE` | `id-ID` | Date/time formatting locale |
-| `FIM_BUFFER_SIZE` | `1000` | FIM event buffer size |
-| `FIM_BATCH_INTERVAL_MS` | `1000` | Batch processing interval |
-| `FIM_DEBOUNCE_MS` | `500` | Event debounce window |
-| `LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
-| `CORS_ORIGINS` | `http://localhost:3000` | Allowed CORS origins |
-| `SESSION_TIMEOUT_MINUTES` | `60` | Session timeout |
-| `MAX_FILE_SIZE_MB` | `100` | Max file size to hash |
-| `OJS_DB_TIMEOUT_SECONDS` | `10` | OJS database connection timeout |
+| `DB_PATH` | `./database/` | SQLite database path |
 
-### Database Directory
+### Permissions
 
-SQLite database is stored in `./data/ojs_monitor.db`. This directory is gitignored.
+For monitoring CMS paths, ensure:
+- Read access to application directories
+- Read access to upload directories
+- MySQL SELECT permissions on CMS database
+
+---
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/login` | Admin login |
-| GET | `/api/projects` | List all projects |
-| POST | `/api/projects` | Create new project |
-| GET | `/api/projects/:id` | Get project details |
+| GET | `/api/projects` | List projects |
+| POST | `/api/projects` | Create project |
+| GET | `/api/projects/:id` | Get project |
 | PUT | `/api/projects/:id` | Update project |
 | POST | `/api/projects/:id/scan` | Start baseline scan |
 | GET | `/api/projects/:id/jobs` | Get scan jobs |
-| GET | `/api/projects/:id/files` | Get monitored files |
-| GET | `/api/projects/:id/audit` | Get audit metrics |
+| GET | `/api/projects/:id/files` | Get files |
 | GET | `/api/logs` | Get audit logs |
-| POST | `/api/test-connection` | Test OJS connection |
 
-## Security Considerations
+---
 
-1. **Change default admin password** immediately after first login
-2. **Use HTTPS** in production (configure reverse proxy)
-3. **Restrict file paths** - App should have read-only access to OJS paths
-4. **Database permissions** - Use MySQL user with minimal required permissions
+## Development
 
-### Recommended MySQL User Permissions
+### Makefile Targets
+
+```bash
+make build         # Build all binaries
+make clean         # Remove binaries
+make test          # Run tests
+make test-race     # Run tests with race detector
+make status        # Check system status
+make migrate       # Run migrations
+```
+
+### Project Structure
+
+```
+backend/
+├── cmd/                    # Binaries
+│   ├── manage/main.go     # CLI tool
+│   ├── server/main.go     # HTTP server
+│   └── worker/main.go     # Background worker
+├── pkg/                    # Shared
+├── internal/               # Application
+│   ├── domain/            # Business rules
+│   ├── application/        # Use cases
+│   └── infrastructure/    # Implementations
+└── wire/                  # DI
+```
+
+---
+
+## Security
+
+1. **Change default password** after first login
+2. **Use HTTPS** in production
+3. **Restrict paths** - Read-only access to CMS directories
+4. **MySQL permissions** - Use minimal required permissions
+
+### Recommended MySQL Permissions
 
 ```sql
-GRANT SELECT ON ojs_database.* TO 'ojs_monitor'@'%';
+GRANT SELECT ON cms_database.* TO 'fim_monitor'@'%';
 FLUSH PRIVILEGES;
 ```
 
+---
+
 ## Troubleshooting
 
-### "Connection timeout" when testing OJS database
+### "Connection timeout" when testing CMS database
 - Verify MySQL is running and accessible
 - Check firewall settings
-- Ensure MySQL allows remote connections (or use socket)
+- Ensure MySQL allows remote connections
 
 ### Scan stuck at "counting" status
-- Check if worker is running (backend logs)
+- Check if worker is running
 - Verify paths are correct and accessible
 - Check disk space
 
@@ -325,9 +339,7 @@ FLUSH PRIVILEGES;
 - Check whitelist/blacklist settings
 - Verify symlinks are not being skipped
 
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
+---
 
 ## Contributing
 
@@ -337,66 +349,35 @@ MIT License - see [LICENSE](LICENSE) for details.
 4. Push to the branch
 5. Create a Pull Request
 
-## Support
+---
 
-For issues and feature requests, please open an issue on GitHub.
+## License
 
-## Build Output
-
-Binary backend **wajib** bernama:
-
-```
-fim-server
-```
-
-Lokasi output:
-
-```
-backend/fim-server
-```
-
-Selalu gunakan:
-
-```bash
-cd backend
-go build -o fim-server .
-```
-
-atau dari repository root:
-
-```bash
-go build -o backend/fim-server ./backend
-```
-
-Jangan:
-
-- mengubah nama binary
-- membuat binary dengan nama lain
-- membuat binary di luar `backend/`
-- membuat artifact build di luar repository
-
-Setelah perubahan pada kode backend, pastikan binary `backend/fim-server` berhasil dibangun sebelum pekerjaan dianggap selesai.
+MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-# Definition of Done
+## Build Output
 
-Sebuah task backend dianggap selesai hanya jika seluruh syarat berikut terpenuhi:
-
-- Perubahan bersifat minimal dan modular.
-- Tidak ada file `.go` yang melebihi 200 baris.
-- Setiap business logic baru memiliki unit test.
-- Regression test ditambahkan untuk setiap bug yang diperbaiki.
-- Seluruh test yang relevan lulus.
-- Backend berhasil dibangun menjadi binary:
+Binaries are located in `backend/`:
 
 ```
-backend/fim-server
+backend/manage       # CLI tool
+backend/fim-server  # HTTP API server
+backend/worker      # Background worker
 ```
 
-- Tidak ada warning atau error build yang diketahui.
-- Tidak ada perubahan di luar workspace:
+Build using Makefile:
 
+```bash
+make build
 ```
-/home/arissupriy/stai/ojs-monitor
+
+Or manually:
+
+```bash
+cd backend
+go build -o manage ./cmd/manage
+go build -o fim-server ./cmd/server
+go build -o worker ./cmd/worker
 ```

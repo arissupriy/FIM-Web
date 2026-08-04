@@ -23,6 +23,12 @@ type AuthRepository interface {
 
 	// GetAuditLogs retrieves recent audit logs
 	GetAuditLogs(ctx context.Context, limit int) ([]*models.AuditLog, error)
+
+	// SeedDefaultAdmin creates default admin if none exists
+	SeedDefaultAdmin(ctx context.Context) error
+
+	// Count returns the number of admin users
+	Count(ctx context.Context) (int, error)
 }
 
 // SeedAdminFunc defines the function signature for seeding default admin

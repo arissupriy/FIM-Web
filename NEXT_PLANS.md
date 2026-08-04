@@ -19,12 +19,12 @@
 
 ### Phase 1: Foundation
 
-- [x] **[P1-01] Tambah kolom permission ke database** - Add file_mode, file_uid, file_gid columns to project_files table
-- [x] **[P1-02] Update models.go dengan permission fields** - Add FileMode, FileUID, FileGID to ProjectFile struct
-- [x] **[P1-03] Update getFileHash → getFileMetadata** - Capture stat() data including permissions
-- [x] **[P1-04] Update worker.go baseline scan** - Include permissions in baseline hash calculation
-- [x] **[P1-05] Update watcher.go untuk permission tracking** - Detect chmod/chown changes
-- [x] **[P1-06] Add permission change detection** - Flag permission changes as HIGH risk
+- [ ] **[P1-01] Tambah kolom permission ke database** - Add file_mode, file_uid, file_gid columns to project_files table
+- [ ] **[P1-02] Update models.go dengan permission fields** - Add FileMode, FileUID, FileGID to ProjectFile struct
+- [ ] **[P1-03] Update getFileHash → getFileMetadata** - Capture stat() data including permissions
+- [ ] **[P1-04] Update worker.go baseline scan** - Include permissions in baseline hash calculation
+- [ ] **[P1-05] Update watcher.go untuk permission tracking** - Detect chmod/chown changes
+- [ ] **[P1-06] Add permission change detection** - Flag permission changes as HIGH risk
 
 ### Phase 2: Alerting System
 

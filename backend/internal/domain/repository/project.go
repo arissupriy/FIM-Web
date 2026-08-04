@@ -33,4 +33,16 @@ type ProjectRepository interface {
 
 	// GetActiveProjects retrieves all active projects
 	GetActiveProjects(ctx context.Context) ([]*models.Project, error)
+
+	// GetProjectsForIntegrityScan retrieves projects with integrity scan enabled
+	GetProjectsForIntegrityScan(ctx context.Context) ([]*models.Project, error)
+
+	// UpdateBaseline updates baseline progress and status
+	UpdateBaseline(ctx context.Context, id int, status string, total, processed int) error
+
+	// UpdateIntegrityScan updates last integrity scan timestamp and status
+	UpdateIntegrityScan(ctx context.Context, id int, status string) error
+
+	// Count returns the number of projects
+	Count(ctx context.Context) (int, error)
 }

@@ -13,7 +13,6 @@ next
 *.env.local
 
 # Binary
-server
 ojs-monitor
 server-linux
 

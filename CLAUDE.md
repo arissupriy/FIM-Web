@@ -1,373 +1,296 @@
 # CLAUDE.md
 
-## Project
+## Project Overview
 
-**OJS Monitor** - File Integrity Monitoring (FIM) untuk Open Journal Systems
+**OJS Monitor** is a **FIM (File Integrity Monitoring) Platform** - not just for OJS.
 
-Repository root:
-
-```
-/home/arissupriy/stai/ojs-monitor
-```
-
-**Fokus saat ini: Backend only (Phase by Phase)**
-
-Frontend tidak dikerjakan sampai backend phase selesai.
+> OJS is the first **dedicated template**. The platform is generic and can support multiple CMS/systems via template plugins (WordPress, Drupal, custom).
 
 ---
 
-# Workspace Boundary (STRICT)
-
-Workspace yang diizinkan hanya:
+## Platform Purpose
 
 ```
-/home/arissupriy/stai/ojs-monitor
-```
-
-Dilarang:
-
-- membaca project lain
-- membuat file di luar repository
-- build di luar repository
-- menggunakan /tmp
-- menggunakan ~/Desktop
-- menggunakan ~/Downloads
-- mengakses parent directory
-- menyentuh frontend/
-
-Selalu gunakan path relatif.
-
----
-
-# Working Directory
-
-Sebelum menjalankan command, pastikan working directory adalah:
-
-```
-/home/arissupriy/stai/ojs-monitor
+┌─────────────────────────────────────────────────────────────────┐
+│                     FIM MONITOR PLATFORM                       │
+│              (Generic File Integrity Monitoring)                  │
+├─────────────────────────────────────────────────────────────┤
+│  Core Engine (Platform-wide)                                   │
+│  ├── File Scanner (Hash, Permission, Metadata)                 │
+│  ├── FIM Watcher (inotifywait)                                │
+│  ├── Background Worker (Job Queue)                             │
+│  └── Database (SQLite - Platform Schema)                       │
+├─────────────────────────────────────────────────────────────┤
+│  Templates/Plugins (CMS-Specific Detection)                     │
+│  ├── OJS Template       → submission_files, users, journals   │
+│  ├── WordPress Template → wp_posts, wp_uploads (future)        │
+│  └── Custom Template   → (user-defined rules)                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-# Project Layout (Backend Only)
+## Backend Architecture
+
+### Clean Architecture Structure
 
 ```
 backend/
-├── main.go           # Entry point, router, middleware
-├── auth.go           # JWT authentication
-├── db.go             # Database, migrations
-├── handlers.go       # HTTP handlers (API)
-├── models.go         # Data structures
-├── scanner.go        # File scanning, OJS reconciliation
-├── watcher.go        # Real-time FIM (inotifywait)
-├── worker.go         # Background job queue
-├── database/         # SQLite database
-└── data/             # Data files
+├── cmd/                        # Entry points (binaries)
+│   ├── manage/                 # CLI management tool
+│   │   └── main.go
+│   ├── server/                 # HTTP API server
+│   │   └── main.go
+│   └── worker/                 # Background worker
+│       └── main.go
+│
+├── pkg/                        # Shared packages
+│   └── response/               # HTTP response helpers
+│       └── response.go
+│
+├── internal/                   # Private application code
+│   ├── domain/                 # Enterprise Business Rules (innermost)
+│   │   ├── models/             # Domain models
+│   │   ├── repository/         # Repository interfaces
+│   │   ├── template/           # Template interface
+│   │   └── service/            # Service interfaces
+│   │
+│   ├── application/            # Application Business Rules
+│   │   ├── usecase/           # Use cases
+│   │   └── dto/                # Data Transfer Objects
+│   │
+│   ├── infrastructure/         # Frameworks & Drivers (outermost)
+│   │   ├── database/sqlite/    # SQLite implementations
+│   │   ├── database/mysql/      # MySQL connections
+│   │   ├── http/               # HTTP handlers & middleware
+│   │   ├── auth/               # Authentication
+│   │   ├── scanner/            # File scanning
+│   │   ├── watcher/            # FIM watcher (inotify)
+│   │   ├── worker/             # Background worker
+│   │   └── templates/           # Template implementations
+│   │       └── ojs/            # OJS template (first template)
+│   │
+│   └── wire/                   # Dependency injection
+│
+├── database/                   # SQLite database files
+│   └── ojs_monitor.db
+│
+└── data/                      # Data files
+```
 
-# Akan ditambahkan per fase:
-# alerts/            # Phase 2: Alert system
-# audit/             # Phase 2: auditd integration
-# reports/           # Phase 3: Compliance reports
+### Domain Layer (`internal/domain/`)
+
+Contains **pure business logic** with NO external dependencies:
+- `models/` - Data structures (Project, ProjectFile, FIMEvent, etc.)
+- `repository/` - Repository interfaces (ProjectRepository, FileRepository, etc.)
+- `template/` - Template interface for CMS-specific detection
+- `service/` - Service interfaces
+
+### Application Layer (`internal/application/`)
+
+Contains **use cases** that orchestrate domain logic:
+- `usecase/` - Business operations (scan, fim, project, job, file, auth)
+- `dto/` - Request/Response DTOs
+
+### Infrastructure Layer (`internal/infrastructure/`)
+
+Implements domain interfaces with **concrete technology**:
+- `database/sqlite/` - SQLite repositories
+- `database/mysql/` - MySQL connections for CMS databases
+- `http/` - HTTP handlers and router
+- `auth/` - Authentication service
+- `scanner/` - Generic file scanning
+- `watcher/` - Real-time FIM using inotifywait
+- `worker/` - Background job processor
+- `templates/` - CMS-specific implementations
+
+---
+
+## Binaries
+
+| Binary | Purpose | Entry Point |
+|--------|---------|-------------|
+| `manage` | CLI tool for DB management | `cmd/manage/` |
+| `fim-server` | HTTP API server | `cmd/server/` |
+| `worker` | Background job processor | `cmd/worker/` |
+
+---
+
+## CLI Workflow
+
+### 1. Initial Setup
+
+```bash
+# Build all binaries
+cd backend
+make build
+
+# Run migrations
+./manage migrate
+
+# Create admin user
+./manage add-admin <username> <password>
+
+# Or use default admin
+./manage seed  # Creates admin/admin123
+```
+
+### 2. Start Services
+
+```bash
+# Terminal 1: Start API server
+./fim-server
+
+# Terminal 2: Start background worker
+./worker
+```
+
+### 3. Check Status
+
+```bash
+./manage status
 ```
 
 ---
 
-# Current Phase
+## Makefile Targets
 
-Baca `NEXT_PLANS.md` untuk phase saat ini yang sedang dikerjakan.
-
-Kerjakan **satu phase sampai selesai** sebelum pindah ke phase berikutnya.
-
----
-
-# Primary Goal
-
-Project ini merupakan File Integrity Monitoring (FIM).
-
-Prioritas utama (berurutan):
-
-1. **correctness** - FIM must be accurate
-2. **security** - No false negatives
-3. **reliability** - Deterministic behavior
-4. **low false positive** - Avoid alert fatigue
-
-Optimisasi performa hanya dilakukan jika tidak mengurangi correctness.
+```bash
+make build        # Build all binaries (manage, fim-server, worker)
+make clean        # Remove binaries
+make test         # Run tests
+make test-race    # Run tests with race detector
+make status       # Check system status
+make migrate      # Run migrations
+```
 
 ---
 
-# Coding Rules
+## Template System
 
-Ikuti style Go yang sudah ada.
+Templates provide **CMS-specific detection logic**:
 
-Gunakan:
+### OJS Template (`internal/templates/ojs/`)
+- Orphan detection (files not in submission_files)
+- User metrics (new users, validated users)
+- Journal statistics
+- Version detection
 
-- gofmt
-- idiomatic Go
-- error handling eksplisit
-- context jika diperlukan
-- early return
+### Future Templates
+- WordPress Template
+- Drupal Template
+- Custom Template
 
-Hindari:
+### Adding a New Template
 
-- panic
-- global mutable state
-- magic number
-- duplicate logic
+1. Create `internal/templates/<name>/`
+2. Implement `Template` interface
+3. Register in application
 
 ---
 
-# Build Rules
+## Working Directory
 
-Seluruh build dilakukan dari `backend/`:
+Always work from:
+```
+/home/arissupriy/stai/ojs-monitor/backend
+```
+
+---
+
+## Build Rules
+
+All builds from `backend/`:
 
 ```bash
 cd backend
-go build ./...
-go test ./...
-go test ./... -race   # Jika menyentuh concurrency
+make build           # Build all binaries
+go build ./...       # Build all packages
+go test ./...        # Run all tests
+go test -race ./... # Race detector
 ```
 
-Binary output:
-
-```bash
-go build -o ./backend/fim-server
-```
+Binary outputs:
+- `backend/manage`
+- `backend/fim-server`
+- `backend/worker`
 
 ---
 
-# File Integrity Rules
+## Database
 
-Jangan mengubah tanpa memahami dampaknya:
-
-- hashing algorithm
-- event ordering
-- audit correlation logic
-- watcher logic
-
-Setiap perubahan harus menjaga:
-
-- deterministic output
-- repeatable scan
-- stable hash calculation
-
----
-
-# Database Rules
-
-Database SQLite:
-
+SQLite database:
 ```
 backend/database/ojs_monitor.db
 ```
 
-Jangan:
-
-- hapus database
-- overwrite database
-- reset WAL
-- migrate schema secara sembarangan
-
-kecuali diminta.
+Migrations run automatically on startup via `wire.InitDB()`.
 
 ---
 
-# Security Rules
+## Security Rules
 
-Selalu perhatikan:
+Always consider:
+- Path traversal
+- Symlink attack
+- TOCTOU race conditions
+- Permission issues
+- Command injection
+- Resource exhaustion
 
-- path traversal
-- symlink attack
-- TOCTOU
-- race condition
-- permission issue
-- command injection
-- resource exhaustion
-
-Selalu anggap input tidak terpercaya.
+Treat all input as untrusted.
 
 ---
 
-# Modification Policy
+## Modification Policy
 
-Lakukan perubahan **sekecil mungkin**.
+Make **minimal changes**:
+- No large refactors
+- No mass renaming
+- No structural changes
+- No API changes
 
-Jangan:
-
-- refactor besar
-- rename massal
-- ubah struktur project
-- ubah API publik
-
-kecuali diminta.
+Unless explicitly requested.
 
 ---
 
-# Git Policy
+## Git Policy
 
-Diizinkan:
+Allowed:
+- `git diff`
+- `git status`
+- `git show`
+- `git log`
 
-```
-git diff
-git status
-git show
-git log
-```
-
-Dilarang (kecuali diminta):
-
-```
-git push
-git merge
-git rebase
-git tag
-git force push
-```
+Disallowed (unless requested):
+- `git push`
+- `git merge`
+- `git rebase`
+- `git tag`
+- `git force push`
 
 ---
 
-# Output Format
+## Output Format
 
-Saat selesai selalu laporkan:
+When done, always report:
+1. Summary of changes
+2. Files modified
+3. Reason for changes
+4. Validations run
+5. Remaining risks
 
-1. Ringkasan perubahan
-2. File yang diubah
-3. Alasan perubahan
-4. Validasi yang dijalankan
-5. Risiko yang tersisa
-
-Jangan mengatakan sesuatu berhasil apabila belum diverifikasi.
-
----
-
-# Engineering Mindset
-
-Sebelum mengubah kode:
-
-1. Pahami arsitektur
-2. Cari akar masalah
-3. Buat perubahan minimal
-4. Verifikasi hasil
-5. Hindari regresi
-
-Selalu utamakan correctness dibanding kecepatan implementasi.
+Don't say something succeeded without verification.
 
 ---
 
-# Build & Test Policy
+## Engineering Mindset
 
-Gunakan **Makefile** sebagai entry point utama untuk operasi project.
+Before changing code:
+1. Understand the architecture
+2. Find root cause
+3. Make minimal changes
+4. Verify results
+5. Avoid regressions
 
-Jangan menjalankan command manual apabila target Makefile sudah tersedia.
-
-Prioritaskan:
-
-```bash
-make doctor
-make backend_start
-make backend_stop
-make backend_restart
-make backend_status
-make backend_logs
-make health
-make clean
-```
-
----
-
-# Backend Build
-
-Backend selalu dibangun menjadi binary:
-
-```
-backend/fim-server
-```
-
-Gunakan:
-
-```bash
-cd backend
-go build -o fim-server .
-```
-
-atau target Makefile yang sesuai apabila tersedia.
-
-Jangan:
-
-- mengubah nama binary
-- membuat binary lain
-- membuat binary di luar `backend/`
-
----
-
-# Testing Before Build
-
-Setiap perubahan backend wajib menjalankan:
-
-```bash
-cd backend
-go test ./...
-```
-
-Jika perubahan menyentuh:
-
-- goroutine
-- worker
-- watcher
-- channel
-- concurrency
-
-maka wajib menjalankan:
-
-```bash
-cd backend
-go test -race ./...
-```
-
-Binary hanya boleh dibangun apabila seluruh test berhasil.
-
----
-
-# Validation
-
-Sebelum task dianggap selesai, lakukan validasi berikut:
-
-1. Build berhasil.
-2. Seluruh test lulus.
-3. Tidak ada race condition (jika relevan).
-4. Binary berhasil dibuat:
-
-```
-backend/fim-server
-```
-
-5. Jalankan:
-
-```bash
-make health
-```
-
-jika backend dijalankan.
-
----
-
-# Makefile Policy
-
-Apabila workflow baru sering digunakan, **update Makefile** daripada menuliskan command panjang di dokumentasi atau README.
-
-Utamakan otomatisasi melalui target Makefile daripada command manual yang berulang.
-
-
-backend_test:
-	cd backend && go test ./...
-
-backend_race:
-	cd backend && go test -race ./...
-
-backend_build:
-	cd backend && go build -o fim-server .
-
-backend_verify: backend_test backend_build
-	@echo "✓ Backend verified"
-
-backend_verify_race: backend_race backend_build
-	@echo "✓ Backend verified (race)"
+Prioritize correctness over speed.

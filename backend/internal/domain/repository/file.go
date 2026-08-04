@@ -76,4 +76,7 @@ type FileRepository interface {
 
 	// GetStats returns file statistics for a project
 	GetStats(ctx context.Context, projectID int) (added, modified, deleted, orphan int, err error)
+
+	// GetBaselineFile retrieves a file by project ID and path for permission comparison
+	GetBaselineFile(ctx context.Context, projectID int, filePath string) (*models.ProjectFile, error)
 }

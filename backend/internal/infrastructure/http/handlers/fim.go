@@ -101,7 +101,7 @@ func (h *FIMHandler) GetWatcherStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// StartWatcher starts the inotify watcher for a project.
+// StartWatcher starts the fsnotify watcher for a project.
 func (h *FIMHandler) StartWatcher(w http.ResponseWriter, r *http.Request) {
 	id := parseIDStr(r, "id")
 	if id == 0 {
@@ -117,7 +117,7 @@ func (h *FIMHandler) StartWatcher(w http.ResponseWriter, r *http.Request) {
 	Respond(w, http.StatusOK, map[string]string{"status": "watcher started"})
 }
 
-// StopWatcher stops the inotify watcher for a project.
+// StopWatcher stops the fsnotify watcher for a project.
 func (h *FIMHandler) StopWatcher(w http.ResponseWriter, r *http.Request) {
 	id := parseIDStr(r, "id")
 	if id == 0 {

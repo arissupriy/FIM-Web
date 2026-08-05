@@ -19,7 +19,7 @@
 ├─────────────────────────────────────────────────────────────┤
 │  Core Engine (Platform-wide)                                   │
 │  ├── File Scanner (Hash, Permission, Metadata)                 │
-│  ├── FIM Watcher (inotifywait)                                │
+│  ├── FIM Watcher (fsnotify)                                │
 │  ├── Background Worker (Job Queue)                             │
 │  └── Database (SQLite - Platform Schema)                       │
 ├─────────────────────────────────────────────────────────────┤

@@ -301,7 +301,7 @@ func runAbout() {
 	fmt.Println("    - MySQL (OJS databases)")
 	fmt.Println()
 	fmt.Println("  Monitoring:")
-	fmt.Println("    - Real-time FIM (inotifywait)")
+	fmt.Println("    - Real-time FIM (fsnotify)")
 	fmt.Println("    - Baseline scanning")
 	fmt.Println("    - Integrity scanning")
 	fmt.Println("    - Orphan detection")

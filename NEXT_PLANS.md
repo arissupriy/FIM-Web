@@ -1,120 +1,180 @@
 # NEXT_PLANS.md
+
 **Project:** OJS Monitor - Enterprise FIM Upgrade
-**Created:** 2026-08-02
-**Last Revised:** 2026-08-05 (reordered Phase 2 by dependency, merged duplicate section headers, added pre-flight decisions)
-**Status:** Ready for Implementation
+**Purpose:** Generic FIM Platform dengan CMS-specific templates
+**Status:** Ready for Phase 2A
+
+---
 
 ## Decisions Made
 
-| Decision | Choice |
-|----------|--------|
-| Alert Channels | ALL (Email + Slack + Webhook) |
-| SIEM Platform | Elasticsearch (ELK) - primary, Syslog - fallback |
-| Compliance Framework | SOC2 (primary) + NIST (mapping) + Executive summary |
-| auditd Access | Full integration available |
-| Report Recipients | Configurable per schedule |
-
-## Decisions Needed Before Phase 2 Starts
-
-These weren't resolved in the original plan and will force rework later if skipped:
-
-| Question | Why it matters | Suggested default |
-|----------|-----------------|--------------------|
-| `alert_configs` schema: flat (channel+threshold per row) or rule-based (condition tree: risk_level AND path pattern AND time_window)? | Changing this after P2-01/P2-06 are built means migrating existing config data and rewriting the CRUD API. | Rule-based, but start with a single-condition subset — leaves room to grow without a rewrite. |
-| Alert dispatcher queue: new in-memory queue (P2-02 as written) or reuse the existing SQLite-backed background worker job queue from Phase 1? | Two separate queueing/retry mechanisms in the same codebase means two failure-handling paths to maintain and debug. | Reuse the existing job queue; add an `alert` job type. |
-| Alert dedup / rate-limiting | A legit deploy touching many files (or a false-positive burst) will otherwise flood Slack/email with one message per file event. | Add a dedup window (e.g. same file+risk_level within N seconds → collapse into one alert) as an explicit sub-task under P2-07, not an afterthought. |
-
-## Verify Before Starting Phase 2
-
-- [ ] **Confirm P1-05 chmod/chown detection uses before/after `stat()` diff**, not just the raw fsnotify `Chmod` event. fsnotify's `Chmod` event only signals that *some* metadata changed — it doesn't distinguish mode vs uid vs gid vs timestamp. P1-06 (flagging permission changes as HIGH risk) and later P2-A3 (audit correlation) both depend on knowing exactly what changed, so this needs to be correct before building on top of it.
+| Decision | Choice | Rationale |
+|----------|--------|------------|
+| Alert Channels | Email + Slack + Webhook | ALL |
+| SIEM Platform | Elasticsearch (ELK) | Syslog fallback |
+| Compliance | SOC2 primary + NIST mapping | Executive summary |
+| FIM Library | **fsnotify** (native Go) | Cleaner than inotifywait |
+| Queue | Reuse existing job queue | Single failure path |
+| Dedup | Explicit P2-02a | file+risk_level window |
+| Schema | Rule-based (single-condition start) | Grow without rewrite |
 
 ---
 
-## 📋 Task List (Execute One by One)
+## Pre-flight Checklist
 
-### Phase 1: Foundation
-
-- [ ] **[P1-01] Tambah kolom permission ke database** - Add file_mode, file_uid, file_gid columns to project_files table
-- [ ] **[P1-02] Update models.go dengan permission fields** - Add FileMode, FileUID, FileGID to ProjectFile struct
-- [ ] **[P1-03] Update getFileHash → getFileMetadata** - Capture stat() data including permissions
-- [ ] **[P1-04] Update worker.go baseline scan** - Include permissions in baseline hash calculation
-- [ ] **[P1-05] Update watcher.go untuk permission tracking** - Detect chmod/chown changes (verify before/after stat diff — see checklist above)
-- [ ] **[P1-06] Add permission change detection** - Flag permission changes as HIGH risk
-
-### Phase 2A: Alerting Core (build first — everything else in Phase 2 sends through this)
-
-- [ ] **[P2-01] Alert system database schema** - alert_configs and alert_history tables (resolve schema-shape decision above first)
-- [ ] **[P2-02] Alert dispatcher core** - Queue and routing (reuse existing job queue — see decision above)
-- [ ] **[P2-02a] Alert dedup / rate-limiting** - Collapse repeated alerts within a time window per file+risk_level
-- [ ] **[P2-03] Implement email alert channel** - SMTP integration
-- [ ] **[P2-04] Implement Slack alert channel** - Slack webhook API
-- [ ] **[P2-05] Implement webhook alert channel** - HTTP POST to configurable URL
-- [ ] **[P2-06] Alert configuration API** - CRUD endpoints for alert channels
-- [ ] **[P2-07] Integrate alerts in watcher** - Send alerts on HIGH/CRITICAL events
-
-### Phase 2B: auditd Integration (depends on 2A dispatcher + stable Phase 1 event format)
-
-- [ ] **[P2-A1] Create auditd parser module** - Parse /var/log/audit/audit.log
-- [ ] **[P2-A2] Create auditd rules generator** - Generate /etc/audit/rules.d/ojs-monitor.rules
-- [ ] **[P2-A3] Implement audit correlation** - Link audit events with FIM events
-- [ ] **[P2-A4] Update actor attribution** - Populate user/pid from audit logs
-
-### Phase 2C: ACL / xattr / SELinux (reuses the P1-05/P1-06 permission-tracking pattern)
-
-- [ ] **[P2-08] Create ACL monitoring module** - Linux getfacl integration
-- [ ] **[P2-09] Create xattr monitoring module** - Extended attributes capture
-- [ ] **[P2-10] Create SELinux context module** - getfattr for SELinux labels
-- [ ] **[P2-11] Add ACL event table** - Track ACL changes
-- [ ] **[P2-12] Detect ACL permission changes** - Alert on ACL modifications
-
-### Phase 2D: SIEM Export (last — needs a stable event schema from 2A/2B/2C)
-
-- [ ] **[P2-13] Create SIEM base client interface** - Common client interface
-- [ ] **[P2-14] Implement syslog channel** - RFC 5424 over UDP/TCP
-- [ ] **[P2-15] Implement Splunk HEC channel** - Splunk HTTP Event Collector
-- [ ] **[P2-16] Implement Elasticsearch channel** - Bulk API ingestion
-- [ ] **[P2-17] Add SIEM buffer/queue** - Batch events for performance
-- [ ] **[P2-18] Add SIEM configuration API** - Configure destinations
-
-### Phase 3: Compliance & Reporting
-
-- [ ] **[P3-01] Report directory structure** - reports/ package with generator
-- [ ] **[P3-02] Report generator** - SOC2, NIST, Executive reports
-- [ ] **[P3-03] CSV export** - Export report data to CSV
-- [ ] **[P3-04] JSON export** - Export report data to JSON
-- [ ] **[P3-05] Scheduled reports table** - Database schema and CRUD
-- [ ] **[P3-06] Hash chain** - SHA-256 hash chain for audit integrity
-- [ ] **[P3-07] Compliance UI** - Compliance page with report preview
-
-### Phase 4: User Experience
-
-- [ ] **[P4-01] Create alerts configuration UI** - Alert channel setup page with Email/Slack/Webhook forms
-- [ ] **[P4-02] Create real-time alert stream** - Alert history table with Sonner toasts
-- [ ] **[P4-03] Add Alerts tab to navigation** - Tab integration in project page
+- [x] **fsnotify migration** - Native Go watcher (not inotifywait)
+- [ ] **Decision: Alert schema** - Rule-based (single-condition)
+- [ ] **Decision: Queue reuse** - Reuse job queue
+- [ ] **Decision: Dedup window** - N seconds per file+risk_level
+- [ ] **P1-05 fsnotify stat() diff** - Permission changes need before/after stat comparison
+- [ ] **P1-06 flag permission changes** - HIGH risk detection
 
 ---
 
-## 🎯 Current Task
+## Dependency Graph
 
-> **Phase 1: Foundation - IN PROGRESS**
-> **Next: [P1-01]**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Phase 2A: Alert Core                      │
+│  P2-01 (schema) → P2-02 (dispatcher) → channels (03-05)      │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                Phase 2B: Config + Integration                │
+│  P2-06 (config API) → P2-07 (watcher integration)             │
+└─────────────────────────────────────────────────────────────┘
+                            │
+          ┌───────────────┬───────────┬───────────┐
+          ▼               ▼           ▼           ▼
+       Phase 2C       Phase 2D    Phase 2E    Phase 2F
+      auditd         ACL/xattr   SIEM       Compliance
+      (4 tasks)     SELinux    (6 tasks)    (7 tasks)
+```
+
+---
+
+## Phase 2A: Alerting Core (Build First - semua phase lain kirim event ke sini)
+
+**Depends on:** Pre-flight decisions (alert schema shape, queue reuse, dedup window) resolved.
+
+| Task | Description |
+|------|-------------|
+| P2-01 | Alert database schema (alert_configs + alert_history) |
+| P2-02 | Alert dispatcher + queue |
+| P2-02a | Dedup/rate-limiting per file+risk_level |
+| P2-03 | Email channel (SMTP) |
+| P2-04 | Slack channel (webhook) |
+| P2-05 | Webhook channel (custom URL) |
+
+**Output:** Alert infrastructure lengkap, reusable channel pattern.
+
+---
+
+## Phase 2B: Configuration + Watcher Integration
+
+**Depends on:** Phase 2A dispatcher + channels working end-to-end.
+
+| Task | Description |
+|------|-------------|
+| P2-06 | Alert config API |
+| P2-07 | Watcher integration (fsnotify → dispatcher) |
+
+**Output:** Alerts fire on HIGH/CRITICAL events.
+
+---
+
+## Phase 2C: auditd Integration
+
+**Depends on:** Phase 2A/2B dispatcher live + P1-05/P1-06 stat()-diff verified (pre-flight checklist).
+
+| Task | Description |
+|------|-------------|
+| P2-A1 | audit.log parser |
+| P2-A2 | audit rules generator |
+| P2-A3 | FIM + audit correlation |
+| P2-A4 | Actor attribution (user/pid) |
+
+**Output:** FIM events enriched with actor/process attribution from audit.log correlation.
+
+---
+
+## Phase 2D: ACL / xattr / SELinux
+
+**Depends on:** Phase 2A dispatcher (reuses same alert pattern as permission tracking in P1-05/P1-06).
+
+| Task | Description |
+|------|-------------|
+| P2-08 | ACL monitoring (getfacl) |
+| P2-09 | xattr capture |
+| P2-10 | SELinux context (getfattr) |
+
+**Output:** ACL, xattr, and SELinux context changes tracked as additional integrity signals.
+
+---
+
+## Phase 2E: SIEM Export
+
+**Depends on:** Stable event schema from Phase 2A/2C/2D (payload format shouldn't still be changing).
+
+| Task | Description |
+|------|-------------|
+| P2-11 | SIEM base client interface |
+| P2-12 | Syslog channel (RFC 5424) |
+| P2-13 | Splunk HEC channel |
+| P2-14 | Elasticsearch bulk API |
+| P2-15 | SIEM buffer/queue |
+| P2-16 | SIEM config API |
+
+**Output:** All alert/audit/ACL events forwarded to Elasticsearch (primary) with Syslog fallback.
+
+---
+
+## Phase 3: Compliance & Reporting
+
+**Depends on:** Phase 2 event data (alerts, audit correlation, ACL/SIEM logs) accumulating in storage.
+
+| Task | Description |
+|------|-------------|
+| P3-01 | Report package structure |
+| P3-02 | SOC2 + NIST + Executive generator |
+| P3-03 | CSV export |
+| P3-04 | JSON export |
+| P3-05 | Scheduled reports table |
+| P3-06 | SHA-256 hash chain |
+| P3-07 | Compliance UI |
+
+**Output:** SOC2/NIST-mapped compliance reports with CSV/JSON export and tamper-evident hash chain.
+
+---
+
+## Phase 4: User Experience
+
+**Depends on:** Phase 2/3 API surface validated (see debug-page checkpoint after P2-07).
+
+| Task | Description |
+|------|-------------|
+| P4-01 | Alerts config UI (Email/Slack/Webhook) |
+| P4-02 | Real-time alert stream + Sonner toasts |
+| P4-03 | Alerts tab in project page |
+
+**Output:** Alert config, live alert stream, and compliance reports accessible from project UI.
 
 ---
 
 ## Progress Tracker
 
-| Phase | Total | Completed | Pending |
-|-------|-------|-----------|---------|
-| Phase 1 | 6 | 0 | 6 |
-| Phase 2A (Alerting Core) | 8 | 0 | 8 |
-| Phase 2B (auditd) | 4 | 0 | 4 |
-| Phase 2C (ACL/xattr/SELinux) | 5 | 0 | 5 |
-| Phase 2D (SIEM) | 6 | 0 | 6 |
-| Phase 3 | 7 | 0 | 7 |
-| Phase 4 | 3 | 0 | 3 |
-| **Total** | **39** | **0** | **39** |
-
-*(Total task count rose from 32 to 39 because P2-02a was split out explicitly — it was implicit inside P2-02 before.)*
+| Phase | Total | Done | Pending |
+|-------|--------|-------|---------|
+| Phase 1 (Foundation) | 6 | 6 | 0 |
+| Phase 2A (Alert Core) | 5 | 0 | 5 |
+| Phase 2B (Config+Watcher) | 2 | 0 | 2 |
+| Phase 2C (auditd) | 4 | 0 | 4 |
+| Phase 2D (ACL/xattr/SELinux) | 3 | 0 | 3 |
+| Phase 2E (SIEM) | 6 | 0 | 6 |
+| Phase 3 (Compliance) | 7 | 0 | 7 |
+| Phase 4 (UX) | 3 | 0 | 3 |
+| **Total** | **36** | **6** | **30** |
 
 ---
 
@@ -122,10 +182,10 @@ These weren't resolved in the original plan and will force rework later if skipp
 
 ```bash
 # Check current phase
-cat NEXT_PLANS.md | grep "Current Task"
+grep "Current Task" NEXT_PLANS.md
 
-# Mark task as done
-# Replace "- [ ]" with "- [x]" for completed tasks
+# Mark task done
+# Replace "- [ ]" with "- [x]"
 
 # Start specific task
 # Read the relevant files and implement

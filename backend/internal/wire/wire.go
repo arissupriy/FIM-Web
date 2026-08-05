@@ -5,7 +5,12 @@ package wire
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/pressly/goose/v3"
 
 	_ "modernc.org/sqlite"
 
@@ -49,12 +54,17 @@ func Init(db *sql.DB) {
 }
 
 // InitDB initializes the database connection and runs migrations.
-// Returns the database instance for backward compatibility.
-func InitDB() *sql.DB {
+// Returns the database instance and any error encountered.
+func InitDB() (*sql.DB, error) {
 	var err error
 	DB, err = sql.Open("sqlite", "./database/ojs_monitor.db")
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	// Test connection
+	if err = DB.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	_, err = DB.Exec("PRAGMA journal_mode=WAL;")
@@ -63,197 +73,49 @@ func InitDB() *sql.DB {
 	}
 	DB.Exec("PRAGMA synchronous=NORMAL;")
 
-	runMigrations()
-	globalRepos = NewRepositories(DB)
+	// Run migrations
+	if err := runMigrations(); err != nil {
+		return nil, fmt.Errorf("migration failed: %w", err)
+	}
 
-	return DB
+	globalRepos = NewRepositories(DB)
+	return DB, nil
 }
 
-func runMigrations() {
-	// Create schema_migrations table
-	DB.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)`)
+// runMigrations runs database migrations using goose.
+func runMigrations() error {
+	// Set goose dialect for SQLite
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
 
-	var currentVersion int
-	err := DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&currentVersion)
+	// Get migrations directory - resolve relative to current working directory
+	// because database is also relative to cwd
+	cwd, err := os.Getwd()
 	if err != nil {
-		currentVersion = 0
+		return fmt.Errorf("failed to get cwd: %w", err)
+	}
+	migrationsPath := filepath.Join(cwd, "database", "migrations")
+
+	// Also check binary location as fallback
+	execPath, _ := os.Executable()
+	if execPath != "" {
+		binDir := filepath.Dir(execPath)
+		altPath := filepath.Join(binDir, "..", "database", "migrations")
+		if _, err := os.Stat(altPath); err == nil {
+			migrationsPath = altPath
+		}
 	}
 
-	if currentVersion < 1 {
-		DB.Exec(`
-		CREATE TABLE IF NOT EXISTS projects (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			description TEXT DEFAULT '',
-			app_path TEXT DEFAULT '[]',
-			files_path TEXT DEFAULT '[]',
-			db_host TEXT DEFAULT '',
-			db_user TEXT DEFAULT '',
-			db_pass TEXT DEFAULT '',
-			db_name TEXT DEFAULT ''
-		);
-		CREATE TABLE IF NOT EXISTS admins (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			username TEXT UNIQUE NOT NULL,
-			password_hash TEXT NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS audit_logs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			admin_id INTEGER,
-			action TEXT NOT NULL,
-			target TEXT NOT NULL,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (admin_id) REFERENCES admins(id)
-		);
-		INSERT INTO schema_migrations (version) VALUES (1);
-		`)
-		currentVersion = 1
+	log.Printf("Migrations path: %s", migrationsPath)
+
+	// Run goose migrations
+	if err := goose.Up(DB, migrationsPath); err != nil && err != goose.ErrAlreadyApplied {
+		return fmt.Errorf("goose up failed: %w", err)
 	}
 
-	if currentVersion < 2 {
-		DB.Exec(`ALTER TABLE projects ADD COLUMN blacklist_exts TEXT DEFAULT '["php","phtml","sh"]';`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN whitelist_paths TEXT DEFAULT '[]';`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (2);`)
-		currentVersion = 2
-	}
-
-	if currentVersion < 3 {
-		DB.Exec(`ALTER TABLE projects ADD COLUMN template TEXT DEFAULT 'OJS 3.x';`)
-		DB.Exec(`
-		CREATE TABLE IF NOT EXISTS project_files (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_id INTEGER,
-			file_path TEXT NOT NULL,
-			file_size INTEGER,
-			mod_time INTEGER,
-			status TEXT,
-			hash TEXT DEFAULT '',
-			created_at INTEGER DEFAULT (strftime('%s', 'now')),
-			updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-			FOREIGN KEY (project_id) REFERENCES projects(id)
-		);
-		`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (3);`)
-		currentVersion = 3
-	}
-
-	if currentVersion < 4 {
-		DB.Exec(`ALTER TABLE projects ADD COLUMN status TEXT DEFAULT 'pending_baseline';`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN baseline_total INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN baseline_processed INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN error_message TEXT DEFAULT '';`)
-		DB.Exec(`
-		CREATE TABLE IF NOT EXISTS jobs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			project_id INTEGER,
-			type TEXT,
-			status TEXT DEFAULT 'queued',
-			error_message TEXT DEFAULT '',
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			started_at DATETIME,
-			finished_at DATETIME,
-			files_success INTEGER DEFAULT 0,
-			files_skipped INTEGER DEFAULT 0,
-			files_error INTEGER DEFAULT 0,
-			FOREIGN KEY (project_id) REFERENCES projects(id)
-		);
-		`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (4);`)
-		currentVersion = 4
-	}
-
-	if currentVersion < 5 {
-		DB.Exec(`ALTER TABLE jobs ADD COLUMN files_success INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE jobs ADD COLUMN files_skipped INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE jobs ADD COLUMN files_error INTEGER DEFAULT 0;`)
-		DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_one_running_job ON jobs(project_id) WHERE status = 'running';`)
-		DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_project_files_unique ON project_files(project_id, file_path);`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (5);`)
-		currentVersion = 5
-	}
-
-	if currentVersion < 6 {
-		DB.Exec(`ALTER TABLE projects ADD COLUMN rescan_interval INTEGER DEFAULT 10;`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (6);`)
-		currentVersion = 6
-	}
-
-	if currentVersion < 7 {
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN created_at INTEGER DEFAULT (strftime('%s', 'now'));`)
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN updated_at INTEGER DEFAULT (strftime('%s', 'now'));`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (7);`)
-		currentVersion = 7
-	}
-
-	if currentVersion < 8 {
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN file_type TEXT DEFAULT 'project';`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (8);`)
-		currentVersion = 8
-	}
-
-	if currentVersion < 9 {
-		DB.Exec(`
-			CREATE TABLE IF NOT EXISTS fim_events (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				project_id INTEGER,
-				event_type TEXT NOT NULL,
-				file_path TEXT NOT NULL,
-				file_hash TEXT,
-				actor_type TEXT,
-				actor_id TEXT,
-				actor_name TEXT,
-				actor_details TEXT,
-				risk_level TEXT DEFAULT 'LOW',
-				classification TEXT,
-				source TEXT DEFAULT 'WATCHER',
-				details TEXT,
-				processed INTEGER DEFAULT 0,
-				alert_sent INTEGER DEFAULT 0,
-				timestamp INTEGER,
-				created_at INTEGER DEFAULT (strftime('%s', 'now')),
-				FOREIGN KEY (project_id) REFERENCES projects(id)
-			);
-		`)
-		DB.Exec(`CREATE INDEX IF NOT EXISTS idx_fim_events_project ON fim_events(project_id);`)
-		DB.Exec(`CREATE INDEX IF NOT EXISTS idx_fim_events_timestamp ON fim_events(timestamp);`)
-		DB.Exec(`CREATE INDEX IF NOT EXISTS idx_fim_events_file ON fim_events(file_path);`)
-		DB.Exec(`
-			CREATE TABLE IF NOT EXISTS fim_watch_paths (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				project_id INTEGER,
-				path TEXT NOT NULL,
-				watch_type TEXT DEFAULT 'OJS_WORKFLOW',
-				enabled INTEGER DEFAULT 1,
-				alert_on_unknown INTEGER DEFAULT 1,
-				alert_level TEXT DEFAULT 'HIGH',
-				created_at INTEGER DEFAULT (strftime('%s', 'now')),
-				FOREIGN KEY (project_id) REFERENCES projects(id),
-				UNIQUE(project_id, path)
-			);
-		`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (9);`)
-		currentVersion = 9
-	}
-
-	if currentVersion < 10 {
-		DB.Exec(`ALTER TABLE projects ADD COLUMN baseline_at INTEGER;`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN watcher_status TEXT DEFAULT 'stopped';`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN integrity_scan_enabled INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE projects ADD COLUMN last_integrity_scan INTEGER;`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (10);`)
-		currentVersion = 10
-	}
-
-	if currentVersion < 11 {
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN file_mode TEXT DEFAULT '';`)
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN file_uid INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN file_gid INTEGER DEFAULT 0;`)
-		DB.Exec(`ALTER TABLE project_files ADD COLUMN permission_changes INTEGER DEFAULT 0;`)
-		DB.Exec(`INSERT INTO schema_migrations (version) VALUES (11);`)
-		currentVersion = 11
-	}
-
-	log.Println("Database initialized and migrated successfully.")
+	log.Println("Database migrations applied.")
+	return nil
 }
 
 // Project returns the project repository.

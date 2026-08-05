@@ -1,6 +1,6 @@
 graphify-out/
 *.db
-database/
+*.wal
 .remember/
 .claude/
 .agents/
@@ -85,3 +85,5 @@ backend/.server.pid
 backend/.worker.pid
 backend/bin/*.pid
 frontend/*.pid
+
+server.log

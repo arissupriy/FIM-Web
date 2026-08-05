@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,7 +27,9 @@ func main() {
 	fmt.Println()
 
 	// Initialize Database
-	_ = wire.InitDB()
+	if _, err := wire.InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
 
 	// Handle shutdown signals
 	sigCh := make(chan os.Signal, 1)

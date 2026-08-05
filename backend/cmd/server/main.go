@@ -70,7 +70,10 @@ func main() {
 	fmt.Println()
 
 	// Initialize Database
-	db := wire.InitDB()
+	db, err := wire.InitDB()
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
 
 	// Seed default admin if none exists
 	if err := wire.SeedDefaultAdmin(context.Background()); err != nil {

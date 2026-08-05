@@ -5,11 +5,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/pressly/goose/v3"
 	"golang.org/x/crypto/bcrypt"
 
 	"ojs-monitor/backend/cmd/manage/process"
@@ -54,6 +57,8 @@ func main() {
 	switch subCmd {
 	case "migrate":
 		runMigrate()
+	case "db":
+		runDBCommand(action)
 	case "seed":
 		runSeed()
 	case "add-admin":
@@ -411,13 +416,82 @@ func printUsage() {
 }
 
 func initDB() {
-	_ = wire.InitDB()
+	if _, err := wire.InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
 }
 
 func runMigrate() {
-	fmt.Println("Running database migrations...")
-	_ = wire.InitDB()
-	fmt.Println("✓ Migrations completed successfully.")
+	fmt.Println("Initializing database schema...")
+	if _, err := wire.InitDB(); err != nil {
+		fmt.Printf("✗ Schema init failed: %s\n", err.Error())
+		os.Exit(1)
+	}
+	fmt.Println("✓ Database schema ready.")
+}
+
+func runDBCommand(action string) {
+	db, err := wire.InitDB()
+	if err != nil {
+		fmt.Printf("✗ Failed to connect to database: %s\n", err.Error())
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Set goose dialect
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		fmt.Printf("✗ Failed to set dialect: %s\n", err.Error())
+		os.Exit(1)
+	}
+
+	// Get migrations path
+	cwd, _ := os.Getwd()
+	migrationsDir := filepath.Join(cwd, "database", "migrations")
+
+	// Handle action
+	switch action {
+	case "status":
+		// Use goose.Status directly
+		if err := goose.Status(db, migrationsDir); err != nil {
+			fmt.Printf("✗ Status failed: %s\n", err.Error())
+			os.Exit(1)
+		}
+	case "up":
+		if err := goose.Up(db, migrationsDir); err != nil {
+			fmt.Printf("✗ Up failed: %s\n", err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("✓ Migrations applied.")
+	case "down":
+		if err := goose.Down(db, migrationsDir); err != nil {
+			fmt.Printf("✗ Down failed: %s\n", err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("✓ Migration rolled back.")
+	case "redo":
+		if err := goose.Redo(db, migrationsDir); err != nil {
+			fmt.Printf("✗ Redo failed: %s\n", err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("✓ Migration redone.")
+	case "reset":
+		fmt.Print("This will reset the database. Are you sure? (yes/no): ")
+		var confirm string
+		fmt.Scan(&confirm)
+		if confirm != "yes" {
+			fmt.Println("Cancelled.")
+			return
+		}
+		if err := goose.DownTo(db, migrationsDir, 0); err != nil {
+			fmt.Printf("✗ Reset failed: %s\n", err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("✓ Database reset to version 0.")
+	default:
+		fmt.Printf("Unknown db action: %s\n", action)
+		fmt.Println("Available: status, up, down, redo, reset")
+		os.Exit(1)
+	}
 }
 
 func runSeed() {

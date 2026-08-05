@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,11 +29,31 @@ import (
 	"ojs-monitor/backend/internal/wire"
 )
 
+var (
+	portFlag    = flag.String("port", "", "Server port (default: 8080)")
+	hostFlag    = flag.String("host", "", "Server host (default: 0.0.0.0)")
+)
+
 func main() {
-	// Get port from environment or default
-	port := os.Getenv("PORT")
+	// Parse flags
+	flag.Parse()
+
+	// Get port from flag, env, or default
+	port := *portFlag
 	if port == "" {
-		port = "8080"
+		port = os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+	}
+
+	// Get host from flag, env, or default
+	host := *hostFlag
+	if host == "" {
+		host = os.Getenv("HOST")
+		if host == "" {
+			host = "0.0.0.0"
+		}
 	}
 
 	// Check for --help flag
@@ -43,7 +64,8 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Starting OJS Security Monitor Backend on :%s\n", port)
+	addr := fmt.Sprintf("%s:%s", host, port)
+	fmt.Printf("Starting OJS Security Monitor Backend on %s\n", addr)
 	fmt.Println("Press Ctrl+C to stop")
 	fmt.Println()
 
@@ -127,7 +149,7 @@ func main() {
 	_ = scanUC
 
 	// Start Server
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
@@ -137,9 +159,13 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  ./fim-server              Start the HTTP server")
+	fmt.Println("  ./fim-server --port 9000  Start on port 9000")
+	fmt.Println("  ./fim-server --host 127.0.0.1  Bind to localhost")
+	fmt.Println("  ./fim-server --port 9000 --host 0.0.0.0")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
-	fmt.Println("  PORT=8080                Set HTTP server port (default: 8080)")
+	fmt.Println("  PORT=8080                Set HTTP server port")
+	fmt.Println("  HOST=0.0.0.0              Set bind address")
 	fmt.Println()
 	fmt.Println("CLI Commands:")
 	fmt.Println("  Use './manage' for database commands")

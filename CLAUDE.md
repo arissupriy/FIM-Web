@@ -36,7 +36,7 @@
 
 ```
 backend/
-├── cmd/                        # Entry points (binaries)
+├── cmd/                        # Entry points (source code)
 │   ├── manage/                 # CLI management tool
 │   │   ├── main.go
 │   │   └── process/           # PID management for server control
@@ -45,6 +45,11 @@ backend/
 │   │   └── main.go
 │   └── worker/                 # Background worker
 │       └── main.go
+│
+├── bin/                        # Compiled binaries
+│   ├── manage                  # CLI tool
+│   ├── fim-server             # HTTP API server
+│   └── worker                 # Background worker
 │
 ├── pkg/                        # Shared packages
 │   └── response/               # HTTP response helpers
@@ -239,20 +244,20 @@ Always work from:
 
 ## Build Rules
 
-All builds from `backend/`:
+All builds from repository root (`/home/arissupriy/stai/ojs-monitor`):
 
 ```bash
+make build           # Build all binaries to bin/
 cd backend
-make build           # Build all binaries
-go build ./...       # Build all packages
-go test ./...        # Run all tests
+go build ./...      # Build all packages
+go test ./...       # Run all tests
 go test -race ./... # Race detector
 ```
 
-Binary outputs:
-- `backend/manage`
-- `backend/fim-server`
-- `backend/worker`
+Binary outputs (in `backend/bin/`):
+- `backend/bin/manage`
+- `backend/bin/fim-server`
+- `backend/bin/worker`
 
 ---
 

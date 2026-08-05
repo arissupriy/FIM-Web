@@ -15,6 +15,7 @@ next
 # Binary
 ojs-monitor
 server-linux
+backend/bin/
 
 # Data
 data/
@@ -80,4 +81,7 @@ yarn-error.log*
 next-env.d.ts
 
 backend/*.pid
+backend/.server.pid
+backend/.worker.pid
+backend/bin/*.pid
 frontend/*.pid

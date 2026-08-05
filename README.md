@@ -65,10 +65,15 @@
 
 ```
 backend/
-├── cmd/                    # Entry points
+├── cmd/                    # Entry points (source code)
 │   ├── manage/            # CLI tool
 │   ├── server/             # HTTP API server
 │   └── worker/             # Background worker
+│
+├── bin/                    # Compiled binaries
+│   ├── manage             # CLI tool
+│   ├── fim-server        # HTTP API server
+│   └── worker            # Background worker
 │
 ├── pkg/                    # Shared packages
 │   └── response/          # HTTP response helpers
@@ -147,23 +152,24 @@ make build
 
 ```bash
 # Run migrations
-./manage migrate
+./bin/manage migrate
 
 # Create admin user
-./manage add-admin admin secretpassword
+./bin/manage add-admin admin secretpassword
 
 # Or use default admin
-./manage seed  # admin / admin123
+./bin/manage seed  # admin / admin123
 ```
 
 ### 3. Start Services
 
 ```bash
-# Terminal 1: API Server
-./fim-server
+# Daemon mode (recommended)
+./bin/manage server:start
 
-# Terminal 2: Background Worker
-./worker
+# Or separate terminals
+./bin/fim-server   # Terminal 1: API Server
+./bin/worker        # Terminal 2: Background Worker
 ```
 
 ### 4. Access
@@ -178,23 +184,23 @@ make build
 
 ```bash
 # Database management
-./manage migrate                     # Run migrations
-./manage seed                      # Seed default admin
-./manage add-admin <username> <password>  # Create admin user
-./manage status                    # Show system status
+./bin/manage migrate                     # Run migrations
+./bin/manage seed                      # Seed default admin
+./bin/manage add-admin <username> <password>  # Create admin user
+./bin/manage status                    # Show system status
 
 # Server management (daemon mode)
-./manage server:start             # Start server + worker
-./manage server:stop              # Stop server + worker
-./manage server:restart           # Restart all services
-./manage server:status           # Show service status
+./bin/manage server:start             # Start server + worker
+./bin/manage server:stop              # Stop server + worker
+./bin/manage server:restart           # Restart all services
+./bin/manage server:status           # Show service status
 
 # Manual mode (separate terminals)
-./fim-server                      # Start HTTP API server
-./worker                         # Start background worker
+./bin/fim-server                      # Start HTTP API server
+./bin/worker                         # Start background worker
 
 # Help
-./manage help                    # Show all commands
+./bin/manage help                    # Show all commands
 ```
 
 ---
@@ -380,12 +386,12 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Build Output
 
-Binaries are located in `backend/`:
+Binaries are located in `backend/bin/`:
 
 ```
-backend/manage       # CLI tool
-backend/fim-server  # HTTP API server
-backend/worker      # Background worker
+backend/bin/manage       # CLI tool
+backend/bin/fim-server  # HTTP API server
+backend/bin/worker      # Background worker
 ```
 
 Build using Makefile:
@@ -398,7 +404,7 @@ Or manually:
 
 ```bash
 cd backend
-go build -o manage ./cmd/manage
-go build -o fim-server ./cmd/server
-go build -o worker ./cmd/worker
+go build -o bin/manage ./cmd/manage
+go build -o bin/fim-server ./cmd/server
+go build -o bin/worker ./cmd/worker
 ```

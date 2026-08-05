@@ -1,5 +1,4 @@
 -- +goose Up
--- +goose StatementBegin
 
 -- Projects table
 CREATE TABLE IF NOT EXISTS projects (
@@ -26,10 +25,6 @@ CREATE TABLE IF NOT EXISTS projects (
     last_integrity_scan INTEGER
 );
 
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 -- Admins table
 CREATE TABLE IF NOT EXISTS admins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,12 +32,8 @@ CREATE TABLE IF NOT EXISTS admins (
     password_hash TEXT NOT NULL
 );
 
--- +goose StatementEnd
-
--- +goose StatementBegin
-
--- Audit logs table
-CREATE TABLE IF NOT EXISTS audit_logs (
+-- Admin action logs (renamed from audit_logs to avoid conflict with auditd_events in P2-A1)
+CREATE TABLE IF NOT EXISTS admin_action_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     admin_id INTEGER,
     action TEXT NOT NULL,
@@ -50,10 +41,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (admin_id) REFERENCES admins(id)
 );
-
--- +goose StatementEnd
-
--- +goose StatementBegin
 
 -- Project files table
 CREATE TABLE IF NOT EXISTS project_files (
@@ -74,10 +61,6 @@ CREATE TABLE IF NOT EXISTS project_files (
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 -- Jobs table
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,10 +76,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     files_error INTEGER DEFAULT 0,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
-
--- +goose StatementEnd
-
--- +goose StatementBegin
 
 -- FIM events table
 CREATE TABLE IF NOT EXISTS fim_events (
@@ -120,10 +99,6 @@ CREATE TABLE IF NOT EXISTS fim_events (
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
 
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 -- FIM watch paths table
 CREATE TABLE IF NOT EXISTS fim_watch_paths (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,10 +112,6 @@ CREATE TABLE IF NOT EXISTS fim_watch_paths (
     FOREIGN KEY (project_id) REFERENCES projects(id),
     UNIQUE(project_id, path)
 );
-
--- +goose StatementEnd
-
--- +goose StatementBegin
 
 -- Alert configs table (P2-01)
 CREATE TABLE IF NOT EXISTS alert_configs (
@@ -157,10 +128,6 @@ CREATE TABLE IF NOT EXISTS alert_configs (
     updated_at INTEGER DEFAULT (strftime('%s', 'now')),
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
-
--- +goose StatementEnd
-
--- +goose StatementBegin
 
 -- Alert history table (P2-01)
 CREATE TABLE IF NOT EXISTS alert_history (
@@ -181,65 +148,39 @@ CREATE TABLE IF NOT EXISTS alert_history (
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 -- Indexes
 CREATE UNIQUE INDEX IF NOT EXISTS idx_project_files_unique ON project_files(project_id, file_path);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_running_job ON jobs(project_id) WHERE status = 'running';
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_fim_events_project ON fim_events(project_id);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_fim_events_timestamp ON fim_events(timestamp);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_fim_events_file ON fim_events(file_path);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_alert_configs_project ON alert_configs(project_id);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_alert_configs_enabled ON alert_configs(enabled);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_alert_history_config ON alert_history(alert_config_id);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_alert_history_status ON alert_history(status);
-
--- +goose StatementEnd
-
--- +goose StatementBegin
-
 CREATE INDEX IF NOT EXISTS idx_alert_history_created ON alert_history(created_at);
 
--- +goose StatementEnd
+-- +goose Down
+
+-- Drop indexes first (no FK dependency)
+DROP INDEX IF EXISTS idx_alert_history_created;
+DROP INDEX IF EXISTS idx_alert_history_status;
+DROP INDEX IF EXISTS idx_alert_history_config;
+DROP INDEX IF EXISTS idx_alert_configs_enabled;
+DROP INDEX IF EXISTS idx_alert_configs_project;
+DROP INDEX IF EXISTS idx_fim_events_file;
+DROP INDEX IF EXISTS idx_fim_events_timestamp;
+DROP INDEX IF EXISTS idx_fim_events_project;
+DROP INDEX IF EXISTS idx_one_running_job;
+DROP INDEX IF EXISTS idx_project_files_unique;
+
+-- Drop tables in reverse order (FK dependency order)
+DROP TABLE IF EXISTS alert_history;
+DROP TABLE IF EXISTS alert_configs;
+DROP TABLE IF EXISTS fim_watch_paths;
+DROP TABLE IF EXISTS fim_events;
+DROP TABLE IF EXISTS jobs;
+DROP TABLE IF EXISTS project_files;
+DROP TABLE IF EXISTS admin_action_logs;
+DROP TABLE IF EXISTS admins;
+DROP TABLE IF EXISTS projects;

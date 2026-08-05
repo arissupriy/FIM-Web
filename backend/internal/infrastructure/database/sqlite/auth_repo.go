@@ -52,7 +52,7 @@ func (r *AuthRepository) UpdateAdminPassword(ctx context.Context, username, pass
 // LogActivity logs an admin activity
 func (r *AuthRepository) LogActivity(ctx context.Context, adminID int, action, target string) error {
 	_, err := r.db.ExecContext(ctx,
-		"INSERT INTO audit_logs (admin_id, action, target) VALUES (?, ?, ?)",
+		"INSERT INTO admin_action_logs (admin_id, action, target) VALUES (?, ?, ?)",
 		adminID, action, target)
 	return err
 }
@@ -61,7 +61,7 @@ func (r *AuthRepository) LogActivity(ctx context.Context, adminID int, action, t
 func (r *AuthRepository) GetAuditLogs(ctx context.Context, limit int) ([]*models.AuditLog, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT l.id, l.admin_id, a.username, l.action, l.target, l.timestamp
-		FROM audit_logs l
+		FROM admin_action_logs l
 		JOIN admins a ON l.admin_id = a.id
 		ORDER BY l.timestamp DESC LIMIT ?`, limit)
 	if err != nil {

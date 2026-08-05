@@ -2,12 +2,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"ojs-monitor/backend/internal/domain/models"
+	"ojs-monitor/backend/internal/infrastructure/alert"
 	"ojs-monitor/backend/internal/infrastructure/worker"
 	"ojs-monitor/backend/internal/infrastructure/watcher"
 	"ojs-monitor/backend/internal/wire"
@@ -29,6 +32,11 @@ func main() {
 	// Initialize Database
 	if _, err := wire.InitDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	// Initialize Alert Dispatcher
+	if err := initAlertDispatcher(); err != nil {
+		log.Fatalf("Failed to initialize alert dispatcher: %v", err)
 	}
 
 	// Handle shutdown signals
@@ -53,6 +61,29 @@ func main() {
 	watcher.StopAllFIMWatchers()
 
 	fmt.Println("Worker stopped.")
+}
+
+// initAlertDispatcher initializes the global alert dispatcher.
+func initAlertDispatcher() error {
+	// Get repositories from wire
+	dispatcher := alert.NewDispatcher(
+		wire.GetAlertConfigRepo(),
+		wire.GetAlertHistoryRepo(),
+	)
+
+	// Register alert channels
+	dispatcher.RegisterChannel(models.AlertChannelEmail, &alert.EmailChannel{})
+	dispatcher.RegisterChannel(models.AlertChannelSlack, &alert.SlackChannel{})
+	dispatcher.RegisterChannel(models.AlertChannelWebhook, &alert.WebhookChannel{})
+
+	// Start the dispatcher with background context
+	dispatcher.Start(context.Background())
+
+	// Set as global dispatcher for watcher
+	watcher.SetAlertDispatcher(dispatcher)
+
+	log.Println("Alert dispatcher initialized")
+	return nil
 }
 
 func printUsage() {

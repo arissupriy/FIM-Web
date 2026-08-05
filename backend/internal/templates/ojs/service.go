@@ -285,7 +285,7 @@ func (s *Service) ValidateIntegrity(ctx context.Context, db *sql.DB) ([]template
 	if err == nil && selfRegCount > 0 {
 		warnings = append(warnings, template.IntegrityWarning{
 			Level:   template.WarningMedium,
-			Code:    template.WarningSelfRegistration,
+			Code:    "OJS_SELF_REGISTRATION",
 			Message: "Self-registration enabled for non-default roles",
 			Details: fmt.Sprintf("%d user group(s) allow self-registration", selfRegCount),
 		})
@@ -298,7 +298,7 @@ func (s *Service) ValidateIntegrity(ctx context.Context, db *sql.DB) ([]template
 	if err == nil && unvalidated > 0 {
 		warnings = append(warnings, template.IntegrityWarning{
 			Level:   template.WarningLow,
-			Code:    template.WarningUnvalidatedUsers,
+			Code:    "OJS_UNVALIDATED_USERS",
 			Message: "Users without email validation",
 			Details: fmt.Sprintf("%d user(s) have not validated their email", unvalidated),
 		})

@@ -24,11 +24,13 @@ var DB *sql.DB
 
 // Repositories holds all repository instances.
 type Repositories struct {
-	Project   repository.ProjectRepository
-	Job       repository.JobRepository
-	File      repository.FileRepository
-	FIMEvent  repository.FIMEventRepository
-	Auth      repository.AuthRepository
+	Project      repository.ProjectRepository
+	Job          repository.JobRepository
+	File         repository.FileRepository
+	FIMEvent     repository.FIMEventRepository
+	Auth         repository.AuthRepository
+	AlertConfig  repository.AlertConfigRepository
+	AlertHistory repository.AlertHistoryRepository
 }
 
 // NewRepositories creates all repository instances with the given database.
@@ -36,11 +38,13 @@ func NewRepositories(db *sql.DB) *Repositories {
 	sqliteDB := sqlite.NewDB(db)
 
 	return &Repositories{
-		Project:  sqlite.NewProjectRepository(sqliteDB),
-		Job:      sqlite.NewJobRepository(sqliteDB),
-		File:     sqlite.NewFileRepository(sqliteDB),
-		FIMEvent: sqlite.NewFIMEventRepository(sqliteDB),
-		Auth:     sqlite.NewAuthRepository(sqliteDB),
+		Project:      sqlite.NewProjectRepository(sqliteDB),
+		Job:          sqlite.NewJobRepository(sqliteDB),
+		File:         sqlite.NewFileRepository(sqliteDB),
+		FIMEvent:     sqlite.NewFIMEventRepository(sqliteDB),
+		Auth:         sqlite.NewAuthRepository(sqliteDB),
+		AlertConfig:  sqlite.NewAlertConfigRepository(sqliteDB),
+		AlertHistory: sqlite.NewAlertHistoryRepository(sqliteDB),
 	}
 }
 
@@ -57,7 +61,11 @@ func Init(db *sql.DB) {
 // Returns the database instance and any error encountered.
 func InitDB() (*sql.DB, error) {
 	var err error
-	DB, err = sql.Open("sqlite", "./database/ojs_monitor.db")
+
+	// Resolve database path relative to executable location
+	dbPath := getDBPath()
+
+	DB, err = sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -72,6 +80,8 @@ func InitDB() (*sql.DB, error) {
 		log.Printf("Warning: failed to enable WAL mode: %v", err)
 	}
 	DB.Exec("PRAGMA synchronous=NORMAL;")
+	// Enable foreign key constraints (SQLite requires this to be explicitly enabled)
+	DB.Exec("PRAGMA foreign_keys = ON;")
 
 	// Run migrations
 	if err := runMigrations(); err != nil {
@@ -82,6 +92,27 @@ func InitDB() (*sql.DB, error) {
 	return DB, nil
 }
 
+// getDBPath returns the database path relative to the executable location.
+func getDBPath() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		// Fallback to relative path
+		return "./database/ojs_monitor.db"
+	}
+	binDir := filepath.Dir(execPath)
+	return filepath.Join(binDir, "..", "database", "ojs_monitor.db")
+}
+
+// GetMigrationsPath returns the migrations directory relative to the executable.
+func GetMigrationsPath() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "./database/migrations"
+	}
+	binDir := filepath.Dir(execPath)
+	return filepath.Join(binDir, "..", "database", "migrations")
+}
+
 // runMigrations runs database migrations using goose.
 func runMigrations() error {
 	// Set goose dialect for SQLite
@@ -89,24 +120,7 @@ func runMigrations() error {
 		return fmt.Errorf("failed to set goose dialect: %w", err)
 	}
 
-	// Get migrations directory - resolve relative to current working directory
-	// because database is also relative to cwd
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get cwd: %w", err)
-	}
-	migrationsPath := filepath.Join(cwd, "database", "migrations")
-
-	// Also check binary location as fallback
-	execPath, _ := os.Executable()
-	if execPath != "" {
-		binDir := filepath.Dir(execPath)
-		altPath := filepath.Join(binDir, "..", "database", "migrations")
-		if _, err := os.Stat(altPath); err == nil {
-			migrationsPath = altPath
-		}
-	}
-
+	migrationsPath := GetMigrationsPath()
 	log.Printf("Migrations path: %s", migrationsPath)
 
 	// Run goose migrations
@@ -141,6 +155,26 @@ func FIMEvent() repository.FIMEventRepository {
 // Auth returns the auth repository.
 func Auth() repository.AuthRepository {
 	return globalRepos.Auth
+}
+
+// AlertConfig returns the alert config repository.
+func AlertConfig() repository.AlertConfigRepository {
+	return globalRepos.AlertConfig
+}
+
+// AlertHistory returns the alert history repository.
+func AlertHistory() repository.AlertHistoryRepository {
+	return globalRepos.AlertHistory
+}
+
+// GetAlertConfigRepo returns the alert config repository for dispatcher.
+func GetAlertConfigRepo() repository.AlertConfigRepository {
+	return globalRepos.AlertConfig
+}
+
+// GetAlertHistoryRepo returns the alert history repository for dispatcher.
+func GetAlertHistoryRepo() repository.AlertHistoryRepository {
+	return globalRepos.AlertHistory
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

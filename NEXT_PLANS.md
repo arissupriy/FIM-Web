@@ -56,14 +56,14 @@ Phase 4: User Experience (3 tasks)
 
 **Depends on:** Pre-flight decisions resolved ✓
 
-| Task | Description |
-|------|-------------|
-| P2-01 | Alert database schema (rule-based single-condition) |
-| P2-02 | Alert dispatcher (reuse job queue) |
-| P2-02a | Rate limiting (60s dedup window) |
-| P2-03 | Email channel (SMTP) |
-| P2-04 | Slack channel (webhook) |
-| P2-05 | Webhook channel (custom URL) |
+| Task | Description | Status |
+|------|-------------|--------|
+| ~~P2-01~~ | ~~Alert database schema~~ | ✅ Done |
+| P2-02 | Alert dispatcher (reuse job queue) | ⏳ Pending |
+| P2-02a | Rate limiting (60s dedup window) | ⏳ Pending |
+| P2-03 | Email channel (SMTP) | ⏳ Pending |
+| P2-04 | Slack channel (webhook) | ⏳ Pending |
+| P2-05 | Webhook channel (custom URL) | ⏳ Pending |
 
 **Output:** Alert infrastructure with reusable channel pattern.
 
@@ -163,16 +163,25 @@ Phase 4: User Experience (3 tasks)
 ## Progress Tracker
 
 | Phase | Total | Done | Pending |
-|-------|--------|------|--------|
+|-------|-------|------|---------|
 | Pre-flight | 7 | 7 | 0 |
-| Phase 2A (Alert Core) | 5 | 0 | 5 |
+| Phase 2A (Alert Core) | 5 | 1 | 4 |
 | Phase 2B (Config+Watcher) | 2 | 0 | 2 |
 | Phase 2C (auditd) | 4 | 0 | 4 |
 | Phase 2D (ACL/xattr/SELinux) | 3 | 0 | 3 |
 | Phase 2E (SIEM) | 6 | 0 | 6 |
 | Phase 3 (Compliance) | 7 | 0 | 7 |
 | Phase 4 (UX) | 3 | 0 | 3 |
-| **Total** | **37** | **7** | **30** |
+| **Total** | **37** | **8** | **29** |
+
+---
+
+## Completed Tasks
+
+- ✅ P1-05/P1-06: Permission tracking with stat() diff
+- ✅ fsnotify migration
+- ✅ P2-01: Alert database schema (alert_configs, alert_history)
+- ✅ Goose v3 migration system
 
 ---
 
@@ -180,18 +189,23 @@ Phase 4: User Experience (3 tasks)
 
 ```bash
 # Build all binaries
-make build
+cd backend && make build
 
-# Check progress
-grep "Progress Tracker" NEXT_PLANS.md
+# Check migration status
+./bin/manage db:status
 
-# Mark task done
-# Replace "- [ ]" with "- [x]"
+# Run migrations
+./bin/manage migrate
 
-# Next task
-# P2-01: Alert schema
+# Rollback last migration
+./bin/manage db:down
+
+# Reset database
+./bin/manage db:reset
+
+# Next task: P2-02 - Alert dispatcher (reuse job queue)
 ```
 
 ---
 
-*Update this file as tasks complete.*
+*Updated: 2026-08-05*

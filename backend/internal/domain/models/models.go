@@ -7,16 +7,19 @@ import (
 	"strings"
 )
 
-// Project represents an OJS monitoring project
+// Project represents a FIM monitoring project
 type Project struct {
 	ID                      int      `json:"id"`
 	Name                    string   `json:"name"`
 	Description             string   `json:"description"`
-	Template                string   `json:"template"`
+	Template                string   `json:"template"`     // Template name (ojs, wordpress, etc.)
+	TemplateID              int      `json:"template_id"` // Foreign key to templates table
+	TemplateVersion         string   `json:"template_version"`
 	AppPaths                []string `json:"app_paths"`
 	FilesPaths              []string `json:"files_paths"`
 	BlacklistExts           []string `json:"blacklist_exts"`
 	WhitelistPaths          []string `json:"whitelist_paths"`
+	WatchType              string   `json:"watch_type"`   // Workflow type (OJS_WORKFLOW, etc.)
 	DBHost                 string   `json:"db_host"`
 	DBUser                 string   `json:"db_user"`
 	DBPass                 string   `json:"db_pass"`
@@ -263,4 +266,117 @@ func NormalizePath(path string) string {
 // SafePath checks if a path is safe (no traversal)
 func SafePath(path string) bool {
 	return !strings.Contains(path, "..")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alert Models (P2-01)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AlertChannel represents the alert delivery channel
+type AlertChannel string
+
+const (
+	AlertChannelEmail   AlertChannel = "email"
+	AlertChannelSlack   AlertChannel = "slack"
+	AlertChannelWebhook AlertChannel = "webhook"
+)
+
+// RiskLevel represents alert risk levels
+type RiskLevel string
+
+const (
+	RiskLevelLow      RiskLevel = "LOW"
+	RiskLevelMedium   RiskLevel = "MEDIUM"
+	RiskLevelHigh     RiskLevel = "HIGH"
+	RiskLevelCritical RiskLevel = "CRITICAL"
+)
+
+// AlertConfig represents an alert configuration
+type AlertConfig struct {
+	ID         int         `json:"id"`
+	ProjectID  int         `json:"project_id"`
+	Name       string      `json:"name"`
+	Channel    AlertChannel `json:"channel"` // email, slack, webhook
+	Config     string      `json:"config"` // JSON: email addresses, webhook URL, etc.
+	Conditions string      `json:"conditions"` // JSON: event_type, risk_level, file_path patterns
+	RiskLevel  RiskLevel   `json:"risk_level"` // Minimum risk level to trigger
+	Enabled    bool        `json:"enabled"`
+	DedupWindow int       `json:"dedup_window"` // Seconds to dedup similar alerts
+	CreatedAt  int64      `json:"created_at"`
+	UpdatedAt  int64      `json:"updated_at"`
+}
+
+// EmailConfig holds email-specific configuration
+type EmailConfig struct {
+	Recipients []string `json:"recipients"`
+	Subject   string   `json:"subject,omitempty"`
+	BodyType  string   `json:"body_type,omitempty"` // text, html
+}
+
+// SlackConfig holds Slack-specific configuration
+type SlackConfig struct {
+	WebhookURL string `json:"webhook_url"`
+	Channel    string `json:"channel,omitempty"`
+	Username  string `json:"username,omitempty"`
+}
+
+// WebhookConfig holds webhook-specific configuration
+type WebhookConfig struct {
+	URL     string            `json:"url"`
+	Method  string            `json:"method,omitempty"` // GET, POST, PUT
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// AlertHistoryStatus represents the status of an alert dispatch
+type AlertHistoryStatus string
+
+const (
+	AlertStatusPending AlertHistoryStatus = "pending"
+	AlertStatusSent    AlertHistoryStatus = "sent"
+	AlertStatusFailed  AlertHistoryStatus = "failed"
+	AlertStatusRetry   AlertHistoryStatus = "retry"
+)
+
+// AlertHistory represents an alert dispatch history entry
+type AlertHistory struct {
+	ID            int                `json:"id"`
+	AlertConfigID int                `json:"alert_config_id"`
+	FIMEventID    int                `json:"fim_event_id"`
+	ProjectID     int                `json:"project_id"`
+	Channel       AlertChannel       `json:"channel"`
+	Status        AlertHistoryStatus `json:"status"` // pending, sent, failed, retry
+	RetryCount    int               `json:"retry_count"`
+	MaxRetries    int               `json:"max_retries"`
+	ErrorMessage  string            `json:"error_message,omitempty"`
+	ResponseBody  string            `json:"response_body,omitempty"`
+	SentAt        int64             `json:"sent_at,omitempty"`
+	CreatedAt     int64             `json:"created_at"`
+}
+
+// IsRetriable returns true if alert can be retried
+func (h *AlertHistory) IsRetriable() bool {
+	return h.Status == AlertStatusFailed && h.RetryCount < h.MaxRetries
+}
+
+// AlertCondition defines matching conditions for an alert
+type AlertCondition struct {
+	EventTypes    []string `json:"event_types,omitempty"`    // CREATED, MODIFIED, DELETED
+	RiskLevels    []string `json:"risk_levels,omitempty"`    // LOW, MEDIUM, HIGH, CRITICAL
+	FilePatterns  []string `json:"file_patterns,omitempty"`   // glob patterns for file paths
+	Classifications []string `json:"classifications,omitempty"` // TRUSTED, UNKNOWN_SOURCE
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Template Models (Template-Aware Architecture)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TemplateInfo holds information about a registered template.
+// Used by API to list available templates for project creation.
+type TemplateInfo struct {
+	Name        string   `json:"name"`
+	Version     string   `json:"version"`
+	Priority    int      `json:"priority"`
+	Description string   `json:"description,omitempty"`
+	RequiredDB  []string `json:"required_db_fields,omitempty"`
+	HasDBConfig bool    `json:"has_db_config"`
 }

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,8 +23,20 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"ojs-monitor/backend/internal/domain/models"
+	"ojs-monitor/backend/internal/domain/template"
+	"ojs-monitor/backend/internal/infrastructure/database/mysql"
 	"ojs-monitor/backend/internal/wire"
 )
+
+// Global alert dispatcher
+var globalAlertDispatcher interface {
+	Dispatch(event *models.FIMEvent)
+}
+
+// SetAlertDispatcher sets the global alert dispatcher.
+func SetAlertDispatcher(dispatcher interface{ Dispatch(event *models.FIMEvent) }) {
+	globalAlertDispatcher = dispatcher
+}
 
 // FIM Watcher Configuration
 const (
@@ -88,6 +99,56 @@ type OJSInfo struct {
 	Classification string `json:"classification"`
 	RiskLevel      string `json:"risk_level"`
 	Reason         string `json:"reason,omitempty"`
+}
+
+// correlateWithTemplate correlates a file event using the template system.
+// This is the generic version that works with any registered template.
+func correlateWithTemplate(projectID int, filePath string, eventType string) (*template.CorrelationResult, error) {
+	result := template.NewCorrelationResult(filePath, eventType)
+
+	// Get project
+	ctx, cancel := context.WithTimeout(context.Background(), OJSLookupTimeout)
+	defer cancel()
+
+	p, err := wire.GetProjectByID(ctx, projectID)
+	if err != nil {
+		result.Reason = "Project not found"
+		return result, nil
+	}
+
+	// Handle DELETED events specially
+	if eventType == "DELETED" {
+		result.Classification = "DELETED"
+		result.RiskLevel = "MEDIUM"
+		result.Reason = "File deletion detected"
+		return result, nil
+	}
+
+	// Get template for this project
+	t, ok := template.Get(p.Template)
+	if !ok {
+		result.Reason = fmt.Sprintf("Template '%s' not registered", p.Template)
+		return result, nil
+	}
+
+	// Connect to CMS database
+	cfg := mysql.Config{
+		Host:     p.DBHost,
+		User:     p.DBUser,
+		Password: p.DBPass,
+		DBName:   p.DBName,
+		Timeout:  OJSLookupTimeout,
+	}
+
+	cmsDB, err := mysql.Connect(ctx, cfg)
+	if err != nil {
+		result.Reason = "Failed to connect to CMS database"
+		return result, err
+	}
+	defer cmsDB.Close()
+
+	// Use template to correlate file
+	return t.CorrelateFile(ctx, cmsDB, filePath, eventType)
 }
 
 // FileMetadata holds file hash and permission information
@@ -417,17 +478,25 @@ func persistFIMEvents(projectID int, events []FIMEvent) {
 			fimEvent.ActorDetails = string(actorJSON)
 		}
 
-		// Correlate with OJS database
-		ojsInfo := correlateOJS(projectID, event.Path, eventType)
-		fimEvent.Classification = ojsInfo.Classification
-		fimEvent.RiskLevel = ojsInfo.RiskLevel
+		// Correlate with CMS database using template system
+		correlation, err := correlateWithTemplate(projectID, event.Path, eventType)
+		if err != nil {
+			log.Printf("Failed to correlate file: %v\n", err)
+		} else if correlation != nil {
+			fimEvent.Classification = correlation.Classification
+			fimEvent.RiskLevel = correlation.RiskLevel
 
-		if ojsInfo.Found {
-			fimEvent.ActorType = "OJS_USER"
-			fimEvent.ActorID = fmt.Sprintf("%d", ojsInfo.UserID)
-			fimEvent.ActorName = ojsInfo.Username
-			if actorJSON, err := json.Marshal(ojsInfo); err == nil {
-				fimEvent.ActorDetails = string(actorJSON)
+			if correlation.Found {
+				fimEvent.ActorType = correlation.ActorType
+				if correlation.ActorID != "" {
+					fimEvent.ActorID = correlation.ActorID
+				}
+				if correlation.ActorName != "" {
+					fimEvent.ActorName = correlation.ActorName
+				}
+				if actorJSON, err := json.Marshal(correlation); err == nil {
+					fimEvent.ActorDetails = string(actorJSON)
+				}
 			}
 		}
 
@@ -701,6 +770,12 @@ func storeFIMEvent(event FIMEventDB) {
 
 	if err := wire.CreateFIMEvent(context.Background(), fimEvent); err != nil {
 		log.Printf("Failed to store FIM event: %v\n", err)
+		return
+	}
+
+	// Dispatch alert for FIM event
+	if globalAlertDispatcher != nil {
+		globalAlertDispatcher.Dispatch(fimEvent)
 	}
 }
 

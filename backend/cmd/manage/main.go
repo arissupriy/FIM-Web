@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -45,6 +44,10 @@ func main() {
 	} else {
 		subCmd = cmd
 	}
+
+	// Parse flags from remaining arguments (for server commands with --host/--port)
+	// Ignore errors since flags are optional
+	flag.CommandLine.Parse(os.Args[2:])
 
 	// Initialize database for most commands
 	if subCmd != "version" && subCmd != "-v" && subCmd != "--version" &&
@@ -340,7 +343,7 @@ func runRouteList() {
 	w.Flush()
 
 	fmt.Println()
-	fmt.Println("  Total: 16 routes")
+	fmt.Println("  Total: 14 routes")
 	fmt.Println()
 }
 
@@ -352,8 +355,13 @@ func runCommandList() {
 
 	fmt.Println("  Database:")
 	fmt.Println("    migrate                       Run database migrations")
-	fmt.Println("    seed                         Seed default admin user")
-	fmt.Println("    add-admin <user> <pass>      Create admin user")
+	fmt.Println("    db:status                   Show migration status")
+	fmt.Println("    db:up                       Apply pending migrations")
+	fmt.Println("    db:down                     Rollback last migration")
+	fmt.Println("    db:redo                     Redo last migration")
+	fmt.Println("    db:reset                    Reset database")
+	fmt.Println("    seed                        Seed default admin user")
+	fmt.Println("    add-admin <user> <pass>     Create admin user")
 	fmt.Println()
 	fmt.Println("  Server:")
 	fmt.Println("    server:start                 Start server + worker")
@@ -384,25 +392,40 @@ func printUsage() {
 	fmt.Println("Usage: manage <command> [options]")
 	fmt.Println()
 	fmt.Println("Database Commands:")
-	fmt.Println("  manage migrate                    Run database migrations")
-	fmt.Println("  manage seed                      Seed default admin user")
-	fmt.Println("  manage add-admin <user> <pass>   Create admin user")
+	fmt.Println("  manage migrate                   Run database migrations")
+	fmt.Println("  manage db:status                Show migration status")
+	fmt.Println("  manage db:up                    Apply pending migrations")
+	fmt.Println("  manage db:down                  Rollback last migration")
+	fmt.Println("  manage db:redo                  Redo last migration")
+	fmt.Println("  manage db:reset                 Reset database to version 0")
+	fmt.Println("  manage seed                     Seed default admin user")
+	fmt.Println("  manage add-admin <user> <pass>  Create admin user")
+	fmt.Println()
+	fmt.Println("Database Commands:")
+	fmt.Println("  manage migrate                   Run database migrations")
+	fmt.Println("  manage db:status               Show migration status")
+	fmt.Println("  manage db:up                   Apply pending migrations")
+	fmt.Println("  manage db:down                 Rollback last migration")
+	fmt.Println("  manage db:redo                 Redo last migration")
+	fmt.Println("  manage db:reset                Reset database to version 0")
+	fmt.Println("  manage seed                    Seed default admin user")
+	fmt.Println("  manage add-admin <user> <pass> Create admin user")
 	fmt.Println()
 	fmt.Println("Server Commands:")
-	fmt.Println("  manage server:start              Start server + worker")
-	fmt.Println("  manage server:stop               Stop server + worker")
-	fmt.Println("  manage server:restart            Restart all services")
-	fmt.Println("  manage server:status             Show service status")
+	fmt.Println("  manage server:start             Start server + worker")
+	fmt.Println("  manage server:stop              Stop server + worker")
+	fmt.Println("  manage server:restart           Restart all services")
+	fmt.Println("  manage server:status            Show service status")
 	fmt.Println()
 	fmt.Println("Info Commands:")
-	fmt.Println("  manage about                    Show system information")
-	fmt.Println("  manage route:list               List all API routes")
-	fmt.Println("  manage status                   Show system status")
-	fmt.Println("  manage list                     Show all commands")
+	fmt.Println("  manage about                   Show system information")
+	fmt.Println("  manage route:list              List all API routes")
+	fmt.Println("  manage status                  Show system status")
+	fmt.Println("  manage list                    Show all commands")
 	fmt.Println()
 	fmt.Println("Server Options:")
-	fmt.Println("  --port 9000                    Server port (default: 8080)")
-	fmt.Println("  --host 0.0.0.0                Bind address (default: 0.0.0.0)")
+	fmt.Println("  --port 9000                   Server port (default: 8080)")
+	fmt.Println("  --host 0.0.0.0               Bind address (default: 0.0.0.0)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  manage migrate")
@@ -444,9 +467,8 @@ func runDBCommand(action string) {
 		os.Exit(1)
 	}
 
-	// Get migrations path
-	cwd, _ := os.Getwd()
-	migrationsDir := filepath.Join(cwd, "database", "migrations")
+	// Get migrations path (same as InitDB)
+	migrationsDir := wire.GetMigrationsPath()
 
 	// Handle action
 	switch action {
@@ -506,7 +528,7 @@ func runSeed() {
 }
 
 func runAddAdmin() {
-	if len(os.Args) != 3 {
+	if len(os.Args) != 4 {
 		fmt.Println("Usage: manage add-admin <username> <password>")
 		os.Exit(1)
 	}

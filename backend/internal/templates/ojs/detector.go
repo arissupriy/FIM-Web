@@ -26,12 +26,43 @@ func (d *Detector) Name() string {
 
 // Version returns supported versions.
 func (d *Detector) Version() string {
-	return "2.x/3.x"
+	return "3.x"
 }
 
 // Priority returns detection priority (higher = checked first).
 func (d *Detector) Priority() int {
 	return 100
+}
+
+// DefaultConfig returns the default configuration for OJS projects.
+func (d *Detector) DefaultConfig() *template.TemplateConfig {
+	return &template.TemplateConfig{
+		Template: "ojs",
+		DefaultWatchPaths: []string{
+			"public/",
+			"lib/pkp/",
+			"plugins/",
+		},
+		DefaultFilesPaths: []string{
+			"files/",
+		},
+		DefaultBlacklistExts: []string{
+			"php", "phtml", "php3", "php4", "php5", "php7", "pht", "phar",
+			"sh", "bash", "zsh",
+			"pl", "py", "rb",
+			"exe", "bat", "cmd", "ps1",
+		},
+		DefaultWhitelistPaths: []string{
+			"lib/pkp/classes/",           // OJS core classes
+			"plugins/generic/",            // Trusted plugins
+			"plugins/themes/",             // Trusted themes
+		},
+		DefaultRescanInterval: 10, // minutes
+		WatchType:            "OJS_WORKFLOW",
+		Settings: map[string]interface{}{
+			"track_uploads": true,
+		},
+	}
 }
 
 // RequiredDBConfig returns required database configuration fields.
@@ -40,11 +71,17 @@ func (d *Detector) RequiredDBConfig() []string {
 }
 
 // Compatible checks if database contains OJS schema.
-func (d *Detector) Compatible(ctx context.Context, db *mysql.OJS) (bool, error) {
+func (d *Detector) Compatible(ctx context.Context, db template.DBConnection) (bool, error) {
+	// Cast to *sql.DB for information_schema query
+	sqlDB, ok := db.(*sql.DB)
+	if !ok {
+		return false, nil
+	}
+
 	tables := []string{"journals", "users", "submissions"}
 	for _, table := range tables {
 		var count int
-		err := db.QueryRowContext(ctx,
+		err := sqlDB.QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
 			table).Scan(&count)
 		if err != nil {
@@ -58,7 +95,7 @@ func (d *Detector) Compatible(ctx context.Context, db *mysql.OJS) (bool, error) 
 }
 
 // DetectOrphans finds files not tracked in OJS submission_files table.
-func (d *Detector) DetectOrphans(ctx context.Context, db *mysql.OJS, files []*models.ProjectFile) ([]*models.ProjectFile, error) {
+func (d *Detector) DetectOrphans(ctx context.Context, db template.DBConnection, files []*models.ProjectFile) ([]*models.ProjectFile, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
@@ -85,7 +122,7 @@ func (d *Detector) DetectOrphans(ctx context.Context, db *mysql.OJS, files []*mo
 }
 
 // GetMetrics returns OJS-specific dashboard metrics.
-func (d *Detector) GetMetrics(ctx context.Context, db *mysql.OJS) (*template.TemplateMetrics, error) {
+func (d *Detector) GetMetrics(ctx context.Context, db template.DBConnection) (*template.TemplateMetrics, error) {
 	m := template.NewTemplateMetrics("ojs", "3.x")
 	m.Generic = &models.DashboardMetrics{}
 	m.Specific = make(map[string]interface{})
@@ -102,11 +139,26 @@ func (d *Detector) GetMetrics(ctx context.Context, db *mysql.OJS) (*template.Tem
 		m.Specific["total_submissions"] = submissions
 	}
 
+	// New users (24h)
+	var newUsers int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE date_registered >= NOW() - INTERVAL 1 DAY").Scan(&newUsers); err == nil {
+		m.Specific["new_users_24h"] = newUsers
+	}
+
+	// Active admins (7d)
+	var activeAdmins int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(DISTINCT user_id) FROM users
+		WHERE user_id IN (SELECT user_id FROM user_user_groups WHERE user_group_id IN (1, 16))
+		AND date_last_login >= NOW() - INTERVAL 7 DAY`).Scan(&activeAdmins); err == nil {
+		m.Specific["active_admins_7d"] = activeAdmins
+	}
+
 	return m, nil
 }
 
 // ValidateIntegrity checks OJS-specific security policies.
-func (d *Detector) ValidateIntegrity(ctx context.Context, db *mysql.OJS, p *models.Project) ([]template.IntegrityWarning, error) {
+func (d *Detector) ValidateIntegrity(ctx context.Context, db template.DBConnection, p *models.Project) ([]template.IntegrityWarning, error) {
 	var warnings []template.IntegrityWarning
 
 	// Check self-registration
@@ -119,11 +171,71 @@ func (d *Detector) ValidateIntegrity(ctx context.Context, db *mysql.OJS, p *mode
 	if err == nil && selfRegCount > 0 {
 		warnings = append(warnings, template.IntegrityWarning{
 			Level:   template.WarningMedium,
-			Code:    template.WarningSelfRegistration,
+			Code:    "OJS_SELF_REGISTRATION",
 			Message: "Self-registration enabled for non-default roles",
 			Details: "Users can self-register as reviewer/editor",
 		})
 	}
 
+	// Check for unvalidated users
+	var unvalidated int
+	err = db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM users WHERE date_validated IS NULL").Scan(&unvalidated)
+	if err == nil && unvalidated > 0 {
+		warnings = append(warnings, template.IntegrityWarning{
+			Level:   template.WarningLow,
+			Code:    "OJS_UNVALIDATED_USERS",
+			Message: "Users without email validation",
+			Details: "Some users have not validated their email",
+		})
+	}
+
 	return warnings, nil
 }
+
+// CorrelateFile correlates a file change event with OJS database.
+// This replaces the correlateOJS function in watcher.go.
+func (d *Detector) CorrelateFile(ctx context.Context, db template.DBConnection, filePath string, eventType string) (*template.CorrelationResult, error) {
+	result := template.NewCorrelationResult(filePath, eventType)
+	result.Classification = "OJS_WORKFLOW"
+
+	baseName := filepath.Base(filePath)
+
+	// Query OJS database for file info
+	var userID int
+	var username, email string
+	var submissionID int
+
+	err := db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(u.user_id, 0),
+			COALESCE(u.username, 'unknown'),
+			COALESCE(u.email, ''),
+			COALESCE(sf.submission_id, 0)
+		FROM submission_files sf
+		LEFT JOIN users u ON u.user_id = sf.uploader_user_id
+		WHERE sf.original_file_name = ?
+		LIMIT 1
+	`, baseName).Scan(&userID, &username, &email, &submissionID)
+
+	if err == nil && userID > 0 {
+		result.Found = true
+		result.ActorType = "CMS_USER"
+		result.ActorID = string(rune(userID))
+		result.ActorName = username
+		result.ActorEmail = email
+		result.SubmissionID = string(rune(submissionID))
+		result.Classification = "OJS_WORKFLOW"
+		result.Reason = "File found in OJS submission_files"
+	} else {
+		result.Reason = "File not found in OJS submission_files"
+	}
+
+	// Set risk level based on event type and actor
+	result.SetRiskLevel(eventType)
+
+	return result, nil
+}
+
+// Ensure mysql.OJS implements template.DBConnection for backward compatibility
+var _ template.DBConnection = (*mysql.OJS)(nil)

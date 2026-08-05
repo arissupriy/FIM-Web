@@ -1,6 +1,9 @@
 // Package template defines interfaces for CMS-specific detection strategies.
 // Templates enable platform to detect orphan files, validate integrity, and provide metrics
 // specific to each CMS (OJS, WordPress, Drupal, etc.)
+//
+// Core principle: domain/template is AGNORSTIC - it only knows about interfaces.
+// No template implementation (OJS, WordPress, etc.) should be imported here.
 package template
 
 import (
@@ -13,16 +16,33 @@ import (
 // DBConnection is a generic database connection interface for templates.
 // Templates receive this interface to query CMS-specific data.
 type DBConnection interface {
+	// QueryContext executes a query that returns rows.
 	QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+	// QueryRowContext executes a query that returns a single row.
 	QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+	// ExecContext executes a query that doesn't return rows.
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+	// Close closes the database connection.
+	Close() error
+}
+
+// DBConnectionConfig holds database connection configuration.
+type DBConnectionConfig struct {
+	Host     string
+	User     string
+	Password string
+	DBName   string
+	Timeout  int // seconds
 }
 
 // TemplateConfig holds template-specific default configuration.
 // These defaults are applied when creating a new project.
 type TemplateConfig struct {
-	// Template identifier (same as Name())
+	// Template identifier (e.g., "ojs", "wordpress")
 	Template string `json:"template"`
+
+	// Template display name
+	DisplayName string `json:"display_name"`
 
 	// Default watch paths pattern for this CMS
 	DefaultWatchPaths []string `json:"default_watch_paths"`
@@ -41,50 +61,48 @@ type TemplateConfig struct {
 
 	// Workflow type identifier
 	WatchType string `json:"watch_type"`
-
-	// Template-specific settings (JSON)
-	Settings map[string]interface{} `json:"settings,omitempty"`
 }
 
 // Template represents a CMS-specific detection strategy.
 // Implement this interface to add support for new CMS platforms.
 type Template interface {
-	// Name returns the template identifier (e.g., "ojs", "wordpress", "drupal")
+	// Name returns the template identifier (e.g., "ojs", "wordpress")
 	Name() string
 
 	// Version returns supported versions (e.g., "3.x", "2.x" for OJS)
 	Version() string
 
 	// Priority returns detection priority (higher = checked first)
-	// Use 100 for primary CMS, lower for fallbacks
 	Priority() int
 
 	// DefaultConfig returns the default configuration for projects using this template.
-	// This is used when creating a new project with this template.
 	DefaultConfig() *TemplateConfig
 
+	// CreateDBConnection creates a database connection for the CMS.
+	// This isolates CMS-specific connection logic from infrastructure.
+	CreateDBConnection(ctx context.Context, config DBConnectionConfig) (DBConnection, error)
+
 	// DetectOrphans finds files not tracked in CMS database.
-	// Called during reconciliation to flag untracked uploads as orphans.
-	// Returns files marked with Status="ORPHAN".
+	// This is OPTIONAL - templates without orphan detection return nil, nil.
 	DetectOrphans(ctx context.Context, db DBConnection, files []*models.ProjectFile) ([]*models.ProjectFile, error)
 
 	// GetMetrics returns CMS-specific dashboard metrics.
-	// These are merged with generic FIM metrics.
+	// This is OPTIONAL - templates without metrics return nil, nil.
 	GetMetrics(ctx context.Context, db DBConnection) (*TemplateMetrics, error)
 
 	// ValidateIntegrity checks CMS-specific integrity rules.
-	// Return warnings or errors for policy violations.
+	// This is OPTIONAL - templates without validation return empty slice.
 	ValidateIntegrity(ctx context.Context, db DBConnection, project *models.Project) ([]IntegrityWarning, error)
 
 	// CorrelateFile correlates a file change event with CMS data.
-	// Returns actor information and risk classification.
+	// This is OPTIONAL - templates without correlation return nil, nil.
 	CorrelateFile(ctx context.Context, db DBConnection, filePath string, eventType string) (*CorrelationResult, error)
 
 	// RequiredDBConfig returns required database configuration fields.
-	// Used to validate project setup.
 	RequiredDBConfig() []string
 
-	// Compatible returns true if this template works with the given database.
+	// Compatible checks if database contains CMS schema.
+	// Used for auto-detection.
 	Compatible(ctx context.Context, db DBConnection) (bool, error)
 }
 
@@ -116,25 +134,21 @@ type CorrelationResult struct {
 
 	// Reason describes why this classification was assigned
 	Reason string `json:"reason"`
-
-	// Metadata is additional CMS-specific data
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// TemplateMetrics holds CMS-specific metrics merged with generic metrics
+// TemplateMetrics holds CMS-specific metrics
 type TemplateMetrics struct {
 	TemplateName string                 `json:"template_name"`
-	Version    string                  `json:"version"`
-	Generic    *models.DashboardMetrics `json:"generic"`
-	Specific  map[string]interface{}  `json:"specific"` // CMS-specific metrics
+	Version      string                 `json:"version"`
+	Specific     map[string]interface{} `json:"specific"` // CMS-specific metrics
 }
 
 // IntegrityWarning represents a policy violation warning
 type IntegrityWarning struct {
-	Level   WarningLevel // LOW, MEDIUM, HIGH, CRITICAL
-	Code    string       // Warning code for filtering
-	Message string       // Human-readable message
-	Details string       // Additional context
+	Level   WarningLevel `json:"level"` // LOW, MEDIUM, HIGH, CRITICAL
+	Code    string       `json:"code"`
+	Message string       `json:"message"`
+	Details string       `json:"details,omitempty"`
 }
 
 // WarningLevel represents warning severity
@@ -142,64 +156,27 @@ type WarningLevel string
 
 const (
 	WarningLow      WarningLevel = "LOW"
-	WarningMedium  WarningLevel = "MEDIUM"
-	WarningHigh    WarningLevel = "HIGH"
+	WarningMedium   WarningLevel = "MEDIUM"
+	WarningHigh     WarningLevel = "HIGH"
 	WarningCritical WarningLevel = "CRITICAL"
 )
 
-// NewTemplateMetrics creates a new TemplateMetrics with defaults
-func NewTemplateMetrics(name, version string) *TemplateMetrics {
-	return &TemplateMetrics{
-		TemplateName: name,
-		Version:     version,
-		Generic:     &models.DashboardMetrics{},
-		Specific:    make(map[string]interface{}),
-	}
-}
-
-// AddMetric adds a CMS-specific metric
-func (m *TemplateMetrics) AddMetric(key string, value interface{}) {
-	m.Specific[key] = value
-}
-
-// NewCorrelationResult creates a default correlation result for unknown files
+// NewCorrelationResult creates a default correlation result
 func NewCorrelationResult(filePath string, eventType string) *CorrelationResult {
 	return &CorrelationResult{
 		Found:         false,
 		ActorType:     "UNKNOWN",
-		Classification: "UNKNOWN_SOURCE",
+		Classification: "UNKNOWN",
 		RiskLevel:     "LOW",
-		Reason:        "File not found in CMS database",
+		Reason:        "No CMS correlation available",
 	}
 }
 
-// SetActor sets actor information on a correlation result
-func (r *CorrelationResult) SetActor(actorType, actorID, actorName, actorEmail string) {
-	r.Found = true
-	r.ActorType = actorType
-	r.ActorID = actorID
-	r.ActorName = actorName
-	r.ActorEmail = actorEmail
-}
-
-// SetRiskLevel sets risk level based on event type and actor
-func (r *CorrelationResult) SetRiskLevel(eventType string) {
-	switch eventType {
-	case "DELETED":
-		r.RiskLevel = "MEDIUM"
-	case "MODIFIED":
-		if r.ActorType == "CMS_USER" {
-			r.RiskLevel = "LOW"
-		} else {
-			r.RiskLevel = "HIGH"
-		}
-	case "CREATED":
-		if r.ActorType == "CMS_USER" {
-			r.RiskLevel = "LOW"
-		} else {
-			r.RiskLevel = "MEDIUM"
-		}
-	default:
-		r.RiskLevel = "LOW"
+// NewTemplateMetrics creates a new TemplateMetrics
+func NewTemplateMetrics(name, version string) *TemplateMetrics {
+	return &TemplateMetrics{
+		TemplateName: name,
+		Version:      version,
+		Specific:     make(map[string]interface{}),
 	}
 }

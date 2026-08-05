@@ -511,49 +511,14 @@ func processNextJob() {
 		return
 	}
 
-	// OJS Super Smart Checker (Reconciliation)
-	// Note: scanner.ReconcileOJSFiles uses wire.LegacyProject types, so we convert for the call
-	if p.Template == "OJS 3.x" || p.Template == "OJS 2.x" {
-		// Convert domain files to legacy for scanner.ReconcileOJSFiles
-		legacyAdded := make([]wire.LegacyProjectFile, len(addedFiles))
-		for i, f := range addedFiles {
-			legacyAdded[i] = wire.LegacyProjectFile{
-				ID: f.ID, ProjectID: f.ProjectID, FilePath: f.FilePath,
-				Hash: f.Hash, FileSize: f.FileSize, ModTime: f.ModTime,
-				Status: f.Status, FileType: f.FileType,
-				FileMode: f.FileMode, FileUID: f.FileUID, FileGID: f.FileGID,
-				PermissionChanges: f.PermissionChanges,
-			}
-		}
-		legacyModified := make([]wire.LegacyProjectFile, len(modifiedFiles))
-		for i, f := range modifiedFiles {
-			legacyModified[i] = wire.LegacyProjectFile{
-				ID: f.ID, ProjectID: f.ProjectID, FilePath: f.FilePath,
-				Hash: f.Hash, FileSize: f.FileSize, ModTime: f.ModTime,
-				Status: f.Status, FileType: f.FileType,
-				FileMode: f.FileMode, FileUID: f.FileUID, FileGID: f.FileGID,
-				PermissionChanges: f.PermissionChanges,
-			}
-		}
-		legacyP := wire.LegacyProject{
-			ID: p.ID, DBHost: p.DBHost, DBUser: p.DBUser, DBPass: p.DBPass, DBName: p.DBName,
-			AppPaths: p.AppPaths, FilesPaths: p.FilesPaths, Template: p.Template,
-		}
-		orphans, err := scanner.ReconcileOJSFiles(ctx, legacyP, legacyAdded, legacyModified)
-		if err == nil && len(orphans) > 0 {
-			orphanFiles := make([]*models.ProjectFile, len(orphans))
-			for i, o := range orphans {
-				orphanFiles[i] = &models.ProjectFile{
-					ProjectID: o.ProjectID, FilePath: o.FilePath,
-					Hash: o.Hash, FileSize: o.FileSize, ModTime: o.ModTime,
-					Status: o.Status, FileType: o.FileType,
-					FileMode: o.FileMode, FileUID: o.FileUID, FileGID: o.FileGID,
-					PermissionChanges: o.PermissionChanges,
-				}
-			}
-			if err := wire.BatchUpsertFiles(ctx, orphanFiles); err != nil {
-				log.Printf("Warning: failed to persist orphan findings for project %d: %v\n", projectID, err)
-			}
+	// Reconciliation: Detect orphan files using template system
+	// Templates provide CMS-specific orphan detection logic
+	orphans, err := scanner.ReconcileFiles(ctx, p, allFiles)
+	if err != nil {
+		log.Printf("Warning: reconciliation failed for project %d: %v\n", projectID, err)
+	} else if len(orphans) > 0 {
+		if err := wire.BatchUpsertFiles(ctx, orphans); err != nil {
+			log.Printf("Warning: failed to persist orphan findings for project %d: %v\n", projectID, err)
 		}
 	}
 

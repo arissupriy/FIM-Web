@@ -4,7 +4,6 @@ package watcher
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,11 +18,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	_ "github.com/go-sql-driver/mysql"
-
 	"ojs-monitor/backend/internal/domain/models"
 	"ojs-monitor/backend/internal/domain/template"
-	"ojs-monitor/backend/internal/infrastructure/database/mysql"
 	"ojs-monitor/backend/internal/wire"
 )
 
@@ -87,22 +82,9 @@ type FIMEventActor struct {
 	UID       string `json:"uid,omitempty"`
 }
 
-// OJSInfo - OJS correlation result
-type OJSInfo struct {
-	Found          bool   `json:"found"`
-	UserID         int    `json:"user_id,omitempty"`
-	Username       string `json:"username,omitempty"`
-	FullName       string `json:"full_name,omitempty"`
-	Email          string `json:"email,omitempty"`
-	Role           string `json:"role,omitempty"`
-	SubmissionID   int    `json:"submission_id,omitempty"`
-	Classification string `json:"classification"`
-	RiskLevel      string `json:"risk_level"`
-	Reason         string `json:"reason,omitempty"`
-}
-
 // correlateWithTemplate correlates a file event using the template system.
 // This is the generic version that works with any registered template.
+// Core (infrastructure) uses templates through interfaces - no direct CMS imports.
 func correlateWithTemplate(projectID int, filePath string, eventType string) (*template.CorrelationResult, error) {
 	result := template.NewCorrelationResult(filePath, eventType)
 
@@ -131,16 +113,16 @@ func correlateWithTemplate(projectID int, filePath string, eventType string) (*t
 		return result, nil
 	}
 
-	// Connect to CMS database
-	cfg := mysql.Config{
+	// Create CMS database connection using template (NOT infrastructure)
+	dbCfg := template.DBConnectionConfig{
 		Host:     p.DBHost,
 		User:     p.DBUser,
 		Password: p.DBPass,
 		DBName:   p.DBName,
-		Timeout:  OJSLookupTimeout,
+		Timeout:  10,
 	}
 
-	cmsDB, err := mysql.Connect(ctx, cfg)
+	cmsDB, err := t.CreateDBConnection(ctx, dbCfg)
 	if err != nil {
 		result.Reason = "Failed to connect to CMS database"
 		return result, err
@@ -611,95 +593,6 @@ func updatePermissionChanges(projectID int, fileID int) {
 	wire.IncrementPermissionChanges(context.Background(), fileID, projectID)
 }
 
-// correlateOJS checks if file is from OJS workflow
-func correlateOJS(projectID int, filePath string, eventType string) OJSInfo {
-	result := OJSInfo{
-		Classification: "UNKNOWN_SOURCE",
-		RiskLevel:     "HIGH",
-		Reason:        "File not found in OJS submission_files",
-	}
-
-	if eventType == "DELETED" {
-		result.Classification = "DELETED"
-		result.RiskLevel = "MEDIUM"
-		result.Reason = "File deletion detected"
-		return result
-	}
-
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return result
-	}
-
-	fileName := filepath.Base(filePath)
-	if fileName == "" {
-		return result
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), OJSLookupTimeout)
-	defer cancel()
-
-	p, err := wire.GetProjectByID(ctx, projectID)
-	if err != nil {
-		log.Printf("Failed to get OJS DB config: %v\n", err)
-		result.Reason = "OJS database not configured"
-		return result
-	}
-
-	ojsDB, err := connectOJS(ctx, p.DBHost, p.DBUser, p.DBPass, p.DBName)
-	if err != nil {
-		log.Printf("Failed to connect to OJS DB: %v\n", err)
-		result.Reason = "OJS database connection failed"
-		return result
-	}
-	defer ojsDB.Close()
-
-	var userID int
-	var username, email string
-	var submissionID int
-
-	query := `
-		SELECT sf.uploader_user_id, COALESCE(u.username, ''),
-	       COALESCE(u.email, ''), sf.submission_id
-		FROM submission_files sf
-		LEFT JOIN users u ON u.user_id = sf.uploader_user_id
-		WHERE sf.original_file_name = ?
-		LIMIT 1
-	`
-
-	err = ojsDB.QueryRowContext(ctx, query, fileName).Scan(&userID, &username, &email, &submissionID)
-	if err != nil {
-		if strings.Contains(filePath, "/usageStats/") {
-			result.Classification = "SYSTEM_GENERATED"
-			result.RiskLevel = "LOW"
-			result.Reason = "System-generated usage stats file"
-		} else if strings.Contains(filePath, "/cache/") {
-			result.Classification = "SYSTEM_GENERATED"
-			result.RiskLevel = "LOW"
-			result.Reason = "System cache file"
-		} else if strings.Contains(filePath, "/temp/") {
-			result.Classification = "SYSTEM_GENERATED"
-			result.RiskLevel = "LOW"
-			result.Reason = "Temporary file"
-		} else {
-			result.Classification = "UNKNOWN_SOURCE"
-			result.RiskLevel = "HIGH"
-			result.Reason = fmt.Sprintf("File '%s' not found in OJS submission_files", fileName)
-		}
-		return result
-	}
-
-	result.Found = true
-	result.UserID = userID
-	result.Username = username
-	result.Email = email
-	result.SubmissionID = submissionID
-	result.Classification = "OJS_WORKFLOW"
-	result.RiskLevel = "LOW"
-	result.Reason = "Matched OJS submission_files"
-
-	return result
-}
-
 // getFileMetadata calculates SHA256 hash and captures file metadata
 func getFileMetadata(filePath string) (*FileMetadata, error) {
 	file, err := os.Open(filePath)
@@ -777,40 +670,6 @@ func storeFIMEvent(event FIMEventDB) {
 	if globalAlertDispatcher != nil {
 		globalAlertDispatcher.Dispatch(fimEvent)
 	}
-}
-
-// connectOJS connects to OJS MySQL database
-func connectOJS(ctx context.Context, host, user, pass, dbname string) (*sql.DB, error) {
-	return connectMySQLWithContext(ctx, user, pass, host, dbname)
-}
-
-// connectMySQLWithContext connects to MySQL with context support
-func connectMySQLWithContext(ctx context.Context, user, pass, host, dbName string) (*sql.DB, error) {
-	hostParts := strings.Split(host, ":")
-	actualHost := hostParts[0]
-	port := "3306"
-	if len(hostParts) > 1 {
-		port = hostParts[1]
-	}
-
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&timeout=10s",
-		user, pass, actualHost, port, dbName)
-
-	mysqlDB, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-
-	mysqlDB.SetMaxOpenConns(2)
-	mysqlDB.SetMaxIdleConns(1)
-	mysqlDB.SetConnMaxLifetime(30 * time.Second)
-
-	if err := mysqlDB.PingContext(ctx); err != nil {
-		mysqlDB.Close()
-		return nil, fmt.Errorf("ping failed: %w", err)
-	}
-
-	return mysqlDB, nil
 }
 
 // RestoreWatchersOnStartup restores watchers for all active projects

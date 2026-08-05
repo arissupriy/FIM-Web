@@ -3,34 +3,36 @@ package ojs
 
 import (
 	"testing"
+
+	"ojs-monitor/backend/internal/domain/template"
 )
 
-func TestDetector_Name(t *testing.T) {
-	d := New()
-	if got := d.Name(); got != "ojs" {
+func TestService_Name(t *testing.T) {
+	s := New()
+	if got := s.Name(); got != "ojs" {
 		t.Errorf("Name() = %q, want %q", got, "ojs")
 	}
 }
 
-func TestDetector_Version(t *testing.T) {
-	d := New()
-	if got := d.Version(); got != "3.x" {
+func TestService_Version(t *testing.T) {
+	s := New()
+	if got := s.Version(); got != "3.x" {
 		t.Errorf("Version() = %q, want %q", got, "3.x")
 	}
 }
 
-func TestDetector_Priority(t *testing.T) {
-	d := New()
-	if got := d.Priority(); got != 100 {
+func TestService_Priority(t *testing.T) {
+	s := New()
+	if got := s.Priority(); got != 100 {
 		t.Errorf("Priority() = %d, want %d", got, 100)
 	}
 }
 
-func TestDetector_RequiredDBConfig(t *testing.T) {
-	d := New()
-	reqs := d.RequiredDBConfig()
+func TestService_RequiredDBConfig(t *testing.T) {
+	s := New()
+	reqs := s.RequiredDBConfig()
 
-	expected := []string{"db_host", "db_user", "db_pass", "db_name"}
+	expected := []string{"host", "user", "password", "database"}
 	if len(reqs) != len(expected) {
 		t.Errorf("len(RequiredDBConfig()) = %d, want %d", len(reqs), len(expected))
 	}
@@ -42,9 +44,9 @@ func TestDetector_RequiredDBConfig(t *testing.T) {
 	}
 }
 
-func TestDetector_DefaultConfig(t *testing.T) {
-	d := New()
-	cfg := d.DefaultConfig()
+func TestService_DefaultConfig(t *testing.T) {
+	s := New()
+	cfg := s.DefaultConfig()
 
 	if cfg.Template != "ojs" {
 		t.Errorf("Template = %q, want %q", cfg.Template, "ojs")
@@ -89,18 +91,14 @@ func TestDetectVersion(t *testing.T) {
 	}
 }
 
-func TestOrphanResult(t *testing.T) {
-	result := OrphanResult{
-		Path:         "/var/www/ojs/files/article.pdf",
-		OriginalName: "article.pdf",
-		IsUpload:     true,
+func TestIsOJSPath(t *testing.T) {
+	// Test with non-existent path
+	if IsOJSPath("/nonexistent/path") {
+		t.Error("IsOJSPath should return false for non-existent path")
 	}
+}
 
-	if result.OriginalName != "article.pdf" {
-		t.Errorf("OriginalName = %q, want %q", result.OriginalName, "article.pdf")
-	}
-
-	if !result.IsUpload {
-		t.Error("IsUpload should be true")
-	}
+func TestService_ImplementsTemplate(t *testing.T) {
+	s := New()
+	var _ template.Template = s
 }

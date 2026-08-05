@@ -5,8 +5,6 @@ import (
 	"context"
 	"sort"
 	"sync"
-
-	"ojs-monitor/backend/internal/infrastructure/database/mysql"
 )
 
 // Registry manages all registered templates.
@@ -62,7 +60,7 @@ func (r *Registry) List() []Template {
 }
 
 // DetectBest tries each template in priority order until one matches.
-func (r *Registry) DetectBest(ctx context.Context, db *mysql.OJS) (Template, error) {
+func (r *Registry) DetectBest(ctx context.Context, db DBConnection) (Template, error) {
 	templates := r.List()
 
 	for _, t := range templates {

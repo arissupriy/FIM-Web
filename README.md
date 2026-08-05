@@ -38,7 +38,7 @@
 - **Baseline Scanning**: Create initial file baseline with SHA-256 hashes
 - **Change Detection**: Detect added, modified, and deleted files
 - **Permission Tracking**: Monitor file mode, UID, GID changes
-- **Real-time Monitoring**: Using inotifywait for instant detection
+- **Real-time Monitoring**: Using fsnotify for instant detection
 - **Whitelist/Blacklist**: Exclude specific paths or extensions
 
 ### CMS-Specific Templates
@@ -134,7 +134,7 @@ backend/
 - **Go** 1.21 or higher
 - **Node.js** 18 or higher
 - **MySQL** 5.7+ (for CMS database access)
-- **Linux** with inotifywait (for real-time monitoring)
+- **Linux** (for real-time monitoring with fsnotify)
 
 ---
 

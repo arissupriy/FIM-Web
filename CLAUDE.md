@@ -17,7 +17,7 @@
 ├─────────────────────────────────────────────────────────────┤
 │  Core Engine (Platform-wide)                                   │
 │  ├── File Scanner (Hash, Permission, Metadata)                 │
-│  ├── FIM Watcher (inotifywait)                                │
+│  ├── FIM Watcher (fsnotifywait)                                │
 │  ├── Background Worker (Job Queue)                             │
 │  └── Database (SQLite - Platform Schema)                       │
 ├─────────────────────────────────────────────────────────────┤
@@ -72,7 +72,7 @@ backend/
 │   │   ├── http/               # HTTP handlers & middleware
 │   │   ├── auth/               # Authentication
 │   │   ├── scanner/            # File scanning
-│   │   ├── watcher/            # FIM watcher (inotify)
+│   │   ├── watcher/            # FIM watcher (fsnotify)
 │   │   ├── worker/             # Background worker
 │   │   └── templates/           # Template implementations
 │   │       └── ojs/            # OJS template (first template)
@@ -107,7 +107,7 @@ Implements domain interfaces with **concrete technology**:
 - `http/` - HTTP handlers and router
 - `auth/` - Authentication service
 - `scanner/` - Generic file scanning
-- `watcher/` - Real-time FIM using inotifywait
+- `watcher/` - Real-time FIM using fsnotifywait
 - `worker/` - Background job processor
 - `templates/` - CMS-specific implementations
 

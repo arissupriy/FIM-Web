@@ -115,14 +115,14 @@ Phase 4: User Experience (3 tasks)
 
 **Depends on:** Stable event schema (payload format frozen)
 
-| Task | Description |
-|------|-------------|
-| P2-11 | SIEM base client interface |
-| P2-12 | Syslog channel (RFC 5424) |
-| P2-13 | Splunk HEC channel |
-| P2-14 | Elasticsearch bulk API |
-| P2-15 | SIEM buffer/queue |
-| P2-16 | SIEM config API |
+| Task | Description | Status |
+|------|-------------|--------|
+| ~~P2-11~~ | ~~SIEM base client interface~~ | ✅ Done |
+| ~~P2-12~~ | ~~Syslog channel (RFC 5424)~~ | ✅ Done |
+| ~~P2-13~~ | ~~Splunk HEC channel~~ | ✅ Done |
+| ~~P2-14~~ | ~~Elasticsearch bulk API~~ | ✅ Done |
+| ~~P2-15~~ | ~~SIEM buffer/queue~~ | ✅ Done |
+| ~~P2-16~~ | ~~SIEM config API~~ | ✅ Done |
 
 **Output:** All alert/audit/ACL events forwarded to Elasticsearch (primary) with Syslog fallback.
 
@@ -169,10 +169,10 @@ Phase 4: User Experience (3 tasks)
 | Phase 2B (Config+Watcher) | 2 | 2 | 0 |
 | Phase 2C (auditd) | 4 | 4 | 0 ✅ |
 | Phase 2D (ACL/xattr/SELinux) | 3 | 3 | 0 ✅ |
-| Phase 2E (SIEM) | 6 | 0 | 6 |
+| Phase 2E (SIEM) | 6 | 6 | 0 ✅ |
 | Phase 3 (Compliance) | 7 | 0 | 7 |
 | Phase 4 (UX) | 3 | 0 | 3 |
-| **Total** | **37** | **23** | **14** |
+| **Total** | **37** | **29** | **8** |
 
 ---
 
@@ -195,6 +195,12 @@ Phase 4: User Experience (3 tasks)
 - ✅ P2-08: ACL monitoring (getfacl, extended ACL detection)
 - ✅ P2-09: xattr capture (security.xattr, SELinux labels)
 - ✅ P2-10: SELinux context (getfattr, file capabilities)
+- ✅ P2-11: SIEM base client interface
+- ✅ P2-12: Syslog channel (RFC 5424 UDP/TCP/TLS)
+- ✅ P2-13: Splunk HEC channel
+- ✅ P2-14: Elasticsearch bulk API
+- ✅ P2-15: SIEM buffer/queue
+- ✅ P2-16: SIEM config API
 - ✅ Goose v3 migration system
 - ✅ Template system refactoring
 - ✅ Core-Template separation
@@ -224,4 +230,4 @@ cd backend && make build
 
 ---
 
-*Updated: 2026-08-06 (Phase 2D: ACL/xattr/SELinux complete)*
+*Updated: 2026-08-06 (Phase 2E: SIEM Export COMPLETE - 29/37 tasks)*

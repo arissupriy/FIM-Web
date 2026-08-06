@@ -85,6 +85,14 @@ func (r *Registry) MustGet(name string) Template {
 	return t
 }
 
+// Reset clears all registered templates (mainly for testing).
+func (r *Registry) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.templates = make(map[string]Template)
+	r.ordered = make([]Template, 0)
+}
+
 // DefaultRegistry is the global template registry.
 var DefaultRegistry = NewRegistry()
 
@@ -101,4 +109,9 @@ func Get(name string) (Template, bool) {
 // List all templates from the default registry.
 func List() []Template {
 	return DefaultRegistry.List()
+}
+
+// Reset clears the global registry (mainly for testing).
+func Reset() {
+	DefaultRegistry.Reset()
 }

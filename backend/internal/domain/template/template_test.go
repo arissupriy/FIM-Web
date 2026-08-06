@@ -116,3 +116,44 @@ func TestDBConnectionConfig(t *testing.T) {
 		t.Errorf("Timeout = %d, want 10", cfg.Timeout)
 	}
 }
+
+func TestCorrelationResult_Fields(t *testing.T) {
+	result := &CorrelationResult{
+		Found:          true,
+		ActorType:      "CMS_USER",
+		ActorID:        "123",
+		ActorName:      "john.doe",
+		ActorEmail:     "john@example.com",
+		SubmissionID:   "456",
+		Classification: "OJS_WORKFLOW",
+		RiskLevel:     "LOW",
+		Reason:        "File found in OJS submission_files",
+	}
+
+	if !result.Found {
+		t.Error("Found should be true")
+	}
+
+	if result.ActorType != "CMS_USER" {
+		t.Errorf("ActorType = %q, want %q", result.ActorType, "CMS_USER")
+	}
+
+	if result.ActorID != "123" {
+		t.Errorf("ActorID = %q, want %q", result.ActorID, "123")
+	}
+
+	if result.SubmissionID != "456" {
+		t.Errorf("SubmissionID = %q, want %q", result.SubmissionID, "456")
+	}
+}
+
+func TestTemplateConfig_DisplayName(t *testing.T) {
+	cfg := &TemplateConfig{
+		Template:    "wordpress",
+		DisplayName: "WordPress CMS",
+	}
+
+	if cfg.DisplayName != "WordPress CMS" {
+		t.Errorf("DisplayName = %q, want %q", cfg.DisplayName, "WordPress CMS")
+	}
+}

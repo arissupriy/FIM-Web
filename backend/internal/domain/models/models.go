@@ -12,8 +12,8 @@ type Project struct {
 	ID                      int      `json:"id"`
 	Name                    string   `json:"name"`
 	Description             string   `json:"description"`
-	Template                string   `json:"template"`     // Template name (ojs, wordpress, etc.)
-	TemplateID              int      `json:"template_id"` // Foreign key to templates table
+	Template                string   `json:"template"`     // Template name (ojs, wordpress, etc.) - nullable for generic projects
+	TemplateID              *int     `json:"template_id"` // Foreign key to templates table - nullable
 	TemplateVersion         string   `json:"template_version"`
 	AppPaths                []string `json:"app_paths"`
 	FilesPaths              []string `json:"files_paths"`
@@ -34,6 +34,11 @@ type Project struct {
 	ErrorMessage           string   `json:"error_message"`
 	Configured             bool     `json:"configured"`
 	RescanInterval         int      `json:"rescan_interval"`
+}
+
+// HasTemplate returns true if project uses a CMS template
+func (p *Project) HasTemplate() bool {
+	return p.TemplateID != nil && p.Template != ""
 }
 
 // IsConfigured checks if project has all required fields filled
@@ -308,6 +313,15 @@ type AlertConfig struct {
 
 // EmailConfig holds email-specific configuration
 type EmailConfig struct {
+	// SMTP settings
+	SMTPHost     string `json:"smtp_host"`
+	SMTPPort     int    `json:"smtp_port"`
+	SMTPUsername string `json:"smtp_username"`
+	SMTPPassword string `json:"smtp_password"`
+	SMTPFrom     string `json:"smtp_from"`
+	UseTLS       bool   `json:"use_tls"`
+
+	// Email content
 	Recipients []string `json:"recipients"`
 	Subject   string   `json:"subject,omitempty"`
 	BodyType  string   `json:"body_type,omitempty"` // text, html

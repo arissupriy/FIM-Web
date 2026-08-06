@@ -84,3 +84,28 @@ func RespondWithSuccess(w http.ResponseWriter, status int, data interface{}) {
 func RespondWithError(w http.ResponseWriter, status int, err string) {
 	Respond(w, status, NewErrorResponse(err))
 }
+
+// BadRequest sends HTTP 400 response.
+func BadRequest(w http.ResponseWriter, msg string) {
+	Error(w, http.StatusBadRequest, msg)
+}
+
+// Created sends HTTP 201 response.
+func Created(w http.ResponseWriter, v interface{}) {
+	Respond(w, http.StatusCreated, v)
+}
+
+// NoContent sends HTTP 204 response.
+func NoContent(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// NotFound sends HTTP 404 response.
+func NotFound(w http.ResponseWriter, msg string) {
+	Error(w, http.StatusNotFound, msg)
+}
+
+// InternalError sends HTTP 500 response.
+func InternalError(w http.ResponseWriter, msg string) {
+	Error(w, http.StatusInternalServerError, msg)
+}

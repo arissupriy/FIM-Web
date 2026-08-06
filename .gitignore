@@ -86,4 +86,8 @@ backend/.worker.pid
 backend/bin/*.pid
 frontend/*.pid
 
-server.log
+server.log.ai-context.json
+skills-lock.json
+
+
+venv/

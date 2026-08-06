@@ -20,6 +20,7 @@ type RouterConfig struct {
 	AuthHandler   *handlers.AuthHandler
 	JobHandler    *handlers.JobHandler
 	FileHandler   *handlers.FileHandler
+	AlertHandler  *handlers.AlertHandler
 
 	// Template handlers
 	OJSHandler *ojs.Handler
@@ -94,6 +95,24 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 				r.Get("/projects/{id}/watcher/status", cfg.FIMHandler.GetWatcherStatus)
 				r.Post("/projects/{id}/watcher/start", cfg.FIMHandler.StartWatcher)
 				r.Post("/projects/{id}/watcher/stop", cfg.FIMHandler.StopWatcher)
+			})
+
+			// Alert endpoints
+			r.Route("/projects/{project_id}/alerts", func(r chi.Router) {
+				r.Get("/", cfg.AlertHandler.ListAlertConfigs)
+				r.Get("/history", cfg.AlertHandler.ListProjectAlertHistory)
+				r.Get("/stats", cfg.AlertHandler.GetAlertStats)
+			})
+
+			r.Route("/alerts", func(r chi.Router) {
+				r.Post("/", cfg.AlertHandler.CreateAlertConfig)
+				r.Get("/{id}", cfg.AlertHandler.GetAlertConfig)
+				r.Put("/{id}", cfg.AlertHandler.UpdateAlertConfig)
+				r.Delete("/{id}", cfg.AlertHandler.DeleteAlertConfig)
+				r.Post("/{id}/enable", cfg.AlertHandler.EnableAlertConfig)
+				r.Post("/{id}/disable", cfg.AlertHandler.DisableAlertConfig)
+				r.Get("/{id}/history", cfg.AlertHandler.GetAlertHistory)
+				r.Post("/{id}/test", cfg.AlertHandler.TestAlertConfig)
 			})
 
 			// OJS template endpoints

@@ -59,11 +59,11 @@ Phase 4: User Experience (3 tasks)
 | Task | Description | Status |
 |------|-------------|--------|
 | ~~P2-01~~ | ~~Alert database schema~~ | ✅ Done |
-| P2-02 | Alert dispatcher (reuse job queue) | ⏳ Pending |
-| P2-02a | Rate limiting (60s dedup window) | ⏳ Pending |
-| P2-03 | Email channel (SMTP) | ⏳ Pending |
-| P2-04 | Slack channel (webhook) | ⏳ Pending |
-| P2-05 | Webhook channel (custom URL) | ⏳ Pending |
+| ~~P2-02~~ | ~~Alert dispatcher (reuse job queue)~~ | ✅ Done |
+| ~~P2-02a~~ | ~~Rate limiting (60s dedup window)~~ | ✅ Done |
+| ~~P2-03~~ | ~~Email channel (SMTP)~~ | ✅ Done |
+| ~~P2-04~~ | ~~Slack channel (webhook)~~ | ✅ Done |
+| ~~P2-05~~ | ~~Webhook channel (custom URL)~~ | ✅ Done |
 
 **Output:** Alert infrastructure with reusable channel pattern.
 
@@ -73,10 +73,10 @@ Phase 4: User Experience (3 tasks)
 
 **Depends on:** Phase 2A dispatcher + channels working end-to-end
 
-| Task | Description |
-|------|-------------|
-| P2-06 | Alert config API |
-| P2-07 | Watcher integration (fsnotify → dispatcher) |
+| Task | Description | Status |
+|------|-------------|--------|
+| ~~P2-06~~ | ~~Alert config API~~ | ✅ Done |
+| ~~P2-07~~ | ~~Watcher integration (fsnotify → dispatcher)~~ | ✅ Done |
 
 **Output:** Alerts fire on HIGH/CRITICAL events.
 
@@ -86,12 +86,12 @@ Phase 4: User Experience (3 tasks)
 
 **Depends on:** Phase 2A dispatcher + stat() diff verified
 
-| Task | Description |
-|------|-------------|
-| P2-A1 | audit.log parser |
-| P2-A2 | audit rules generator |
-| P2-A3 | FIM + audit correlation |
-| P2-A4 | Actor attribution (user/pid) |
+| Task | Description | Status |
+|------|-------------|--------|
+| ~~P2-A1~~ | ~~audit.log parser~~ | ✅ Done |
+| ~~P2-A2~~ | ~~audit rules generator~~ | ✅ Done |
+| ~~P2-A3~~ | ~~FIM + audit correlation~~ | ✅ Done |
+| ~~P2-A4~~ | ~~Actor attribution (user/pid)~~ | ✅ Done |
 
 **Output:** FIM events enriched with audit attribution.
 
@@ -101,11 +101,11 @@ Phase 4: User Experience (3 tasks)
 
 **Depends on:** Phase 2A dispatcher (reuses same alert pattern as P1-05/P1-06)
 
-| Task | Description |
-|------|-------------|
-| P2-08 | ACL monitoring (getfacl) |
-| P2-09 | xattr capture |
-| P2-10 | SELinux context (getfattr) |
+| Task | Description | Status |
+|------|-------------|--------|
+| ~~P2-08~~ | ~~ACL monitoring (getfacl)~~ | ✅ Done |
+| ~~P2-09~~ | ~~xattr capture~~ | ✅ Done |
+| ~~P2-10~~ | ~~SELinux context (getfattr)~~ | ✅ Done |
 
 **Output:** ACL, xattr, SELinux context changes tracked as integrity signals.
 
@@ -165,14 +165,14 @@ Phase 4: User Experience (3 tasks)
 | Phase | Total | Done | Pending |
 |-------|-------|------|---------|
 | Pre-flight | 7 | 7 | 0 |
-| Phase 2A (Alert Core) | 5 | 1 | 4 |
-| Phase 2B (Config+Watcher) | 2 | 0 | 2 |
-| Phase 2C (auditd) | 4 | 0 | 4 |
-| Phase 2D (ACL/xattr/SELinux) | 3 | 0 | 3 |
+| Phase 2A (Alert Core) | 5 | 5 | 0 |
+| Phase 2B (Config+Watcher) | 2 | 2 | 0 |
+| Phase 2C (auditd) | 4 | 4 | 0 ✅ |
+| Phase 2D (ACL/xattr/SELinux) | 3 | 3 | 0 ✅ |
 | Phase 2E (SIEM) | 6 | 0 | 6 |
 | Phase 3 (Compliance) | 7 | 0 | 7 |
 | Phase 4 (UX) | 3 | 0 | 3 |
-| **Total** | **37** | **8** | **29** |
+| **Total** | **37** | **23** | **14** |
 
 ---
 
@@ -181,7 +181,23 @@ Phase 4: User Experience (3 tasks)
 - ✅ P1-05/P1-06: Permission tracking with stat() diff
 - ✅ fsnotify migration
 - ✅ P2-01: Alert database schema (alert_configs, alert_history)
+- ✅ P2-02: Alert dispatcher wired to watcher
+- ✅ P2-02a: Rate limiting (60s dedup window)
+- ✅ P2-03: Email SMTP channel (TLS support)
+- ✅ P2-04: Slack webhook channel
+- ✅ P2-05: Webhook custom channel
+- ✅ P2-06: Alert config API (with tests)
+- ✅ P2-07: Watcher integration (fsnotify → dispatcher)
+- ✅ P2-A1: audit.log parser (streaming + JSON format support)
+- ✅ P2-A2: audit rules generator (FIM + compliance + OJS rulesets)
+- ✅ P2-A3: FIM + audit correlation (PID/path/time matching, actor extraction)
+- ✅ P2-A4: Actor attribution (user/pid, session tracking, process chain)
+- ✅ P2-08: ACL monitoring (getfacl, extended ACL detection)
+- ✅ P2-09: xattr capture (security.xattr, SELinux labels)
+- ✅ P2-10: SELinux context (getfattr, file capabilities)
 - ✅ Goose v3 migration system
+- ✅ Template system refactoring
+- ✅ Core-Template separation
 
 ---
 
@@ -208,4 +224,4 @@ cd backend && make build
 
 ---
 
-*Updated: 2026-08-05*
+*Updated: 2026-08-06 (Phase 2D: ACL/xattr/SELinux complete)*

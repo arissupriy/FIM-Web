@@ -1,0 +1,23 @@
+{
+  "project": "ojs-monitor",
+  "user_id": "ojs-monitor",
+  "vault_dir": "/home/arissupriy/vaults/ojs-monitor",
+  "graphify_dir": "graphify-out",
+  "graphify_enabled": true,
+  "mem0_enabled": true,
+  "obsidian_enabled": true,
+  "tech_stack": ["Go", "SQLite", "fsnotify", "TypeScript", "Next.js"],
+  "description": "OJS Monitor - FIM (File Integrity Monitoring) Platform for OJS",
+  "memory_collections": [
+    "ojs-monitor:context",
+    "ojs-monitor:decisions",
+    "ojs-monitor:progress",
+    "ojs-monitor:preferences"
+  ],
+  "graphify_commands": {
+    "query": "graphify query",
+    "path": "graphify path",
+    "explain": "graphify explain",
+    "god_nodes": "graphify god-nodes"
+  }
+}

@@ -1,10 +1,105 @@
 # CLAUDE.md
 
-## Project Overview
+## AI Efficiency Stack (Auto-Enabled)
 
-**OJS Monitor** is a **FIM (File Integrity Monitoring) Platform** - not just for OJS.
+```
+Caveman → ALREADY ON (65% compression)
+ai-local → RUN ON SESSION START
+graphify → Use for code navigation
+mem0 → Query for context
+```
 
-> OJS is the first **dedicated template**. The platform is generic and can support multiple CMS/systems via template plugins (WordPress, Drupal, custom).
+---
+
+### SESSION START SEQUENCE (REQUIRED)
+
+When conversation starts, IMMEDIATELY run:
+
+```bash
+ai-local context && ai-local status
+```
+
+Then proceed with user requests using local context.
+
+---
+
+### Commands Reference:
+
+| Command | When | API Cost |
+|---------|------|----------|
+| `ai-local context` | Session start | 0 |
+| `ai-local status` | Session start | 0 |
+| `graphify query "..."` | When asking about code | 0 |
+| `graphify path A B` | Find relationship | 0 |
+| `mcp__mem0-memory__search_memories` | Get memories | Minimal |
+
+---
+
+### EFFICIENCY RULES
+
+**ALWAYS:**
+- Use `ai-local context` first (zero cost)
+- Use `graphify query` before reading files
+- Batch reads when possible
+
+**NEVER:**
+- Read files without checking graph first
+- Multiple small edits (batch instead)
+- Re-run same query (results are cached)
+
+GOOD (efficient):
+  → graphify query "authentication flow"
+  → Read auth.go, helpers.go together
+  → Make fixes
+  → Test
+  → Done (3-4 API calls)
+```
+
+### Tool Usage:
+
+| Tool | When to Use | When NOT to |
+|------|-------------|-------------|
+| Read | Batch reads | Single quick check |
+| Edit | One precise edit | Large rewrites (use Write) |
+| Bash | One command | Long scripts |
+| Grep | Find patterns | Count lines (use wc) |
+
+### Files:
+- `.ai-context.json` - Project config (per-project)
+- `graphify-out/AI_CONTEXT.md` - Auto-generated context
+- `graphify-out/graph.json` - Knowledge graph
+
+> **PENTING:** Setiap session baru, WAJIB check Mem0 terlebih dahulu!
+
+---
+
+## Core Principle
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  CORE (infrastructure) = AGNORSTIC                              │
+│  • Scanner, Watcher, Worker - generik, tidak tahu template      │
+│  • Tidak pernah import templates/ langsung                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ uses interfaces
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  DOMAIN (interfaces) = GENERIK                                   │
+│  • Template interface - tidak tahu OJS/WordPress                │
+│  • Repository interfaces                                        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ implements
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  TEMPLATES = SPESIFIK                                           │
+│  • templates/ojs/ - semua logic yang tahu OJS                  │
+│  • templates/wordpress/ - (future)                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Dependency Rule**: Core → Domain → Templates (inward only)
 
 ---
 
@@ -13,113 +108,221 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     FIM MONITOR PLATFORM                       │
-│              (Generic File Integrity Monitoring)                  │
-├─────────────────────────────────────────────────────────────┤
-│  Core Engine (Platform-wide)                                   │
+├─────────────────────────────────────────────────────────────────┤
+│  Core Engine (Generic - works with or without template)         │
 │  ├── File Scanner (Hash, Permission, Metadata)                 │
-│  ├── FIM Watcher (fsnotifywait)                                │
+│  ├── FIM Watcher (fsnotify)                                   │
 │  ├── Background Worker (Job Queue)                             │
 │  └── Database (SQLite - Platform Schema)                       │
-├─────────────────────────────────────────────────────────────┤
-│  Templates/Plugins (CMS-Specific Detection)                     │
+├─────────────────────────────────────────────────────────────────┤
+│  Templates (CMS-Specific - Optional enrichment layer)           │
 │  ├── OJS Template       → submission_files, users, journals   │
 │  ├── WordPress Template → wp_posts, wp_uploads (future)        │
 │  └── Custom Template   → (user-defined rules)                 │
-└─────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+**Important**: A project can work WITHOUT a template (pure FIM for generic VPS). Template is an **optional enrichment layer**.
 
 ---
 
 ## Backend Architecture
 
-### Clean Architecture Structure
+### Directory Structure
 
 ```
 backend/
-├── cmd/                        # Entry points (source code)
+├── cmd/                        # Entry points
 │   ├── manage/                 # CLI management tool
-│   │   ├── main.go
-│   │   └── process/           # PID management for server control
-│   │       └── process.go
 │   ├── server/                 # HTTP API server
-│   │   └── main.go
 │   └── worker/                 # Background worker
-│       └── main.go
 │
 ├── bin/                        # Compiled binaries
-│   ├── manage                  # CLI tool
-│   ├── fim-server             # HTTP API server
-│   └── worker                 # Background worker
-│
-├── pkg/                        # Shared packages
-│   └── response/               # HTTP response helpers
-│       └── response.go
 │
 ├── internal/                   # Private application code
-│   ├── domain/                 # Enterprise Business Rules (innermost)
-│   │   ├── models/             # Domain models
-│   │   ├── repository/         # Repository interfaces
-│   │   ├── template/           # Template interface
-│   │   └── service/            # Service interfaces
+│   ├── domain/                 # Interfaces (agnostic)
+│   │   ├── models/            # Data structures
+│   │   ├── repository/        # Repository interfaces
+│   │   └── template/          # Template interface (generik)
 │   │
-│   ├── application/            # Application Business Rules
-│   │   ├── usecase/           # Use cases
-│   │   └── dto/                # Data Transfer Objects
+│   ├── application/            # Use cases
+│   │   ├── usecase/           # Business operations
+│   │   └── dto/               # Data Transfer Objects
 │   │
-│   ├── infrastructure/         # Frameworks & Drivers (outermost)
-│   │   ├── database/sqlite/    # SQLite implementations
-│   │   ├── database/mysql/      # MySQL connections
-│   │   ├── http/               # HTTP handlers & middleware
-│   │   ├── auth/               # Authentication
-│   │   ├── scanner/            # File scanning
-│   │   ├── watcher/            # FIM watcher (fsnotify)
-│   │   ├── worker/             # Background worker
-│   │   └── templates/           # Template implementations
-│   │       └── ojs/            # OJS template (first template)
+│   ├── infrastructure/         # Implementations (generik)
+│   │   ├── database/sqlite/   # SQLite repos
+│   │   ├── http/              # HTTP handlers
+│   │   ├── auth/              # Authentication
+│   │   ├── scanner/            # File scanning (generik)
+│   │   ├── watcher/           # FIM watcher (generik)
+│   │   ├── worker/            # Background worker (generik)
+│   │   └── alert/             # Alert dispatcher
+│   │
+│   ├── templates/              # CMS-specific implementations
+│   │   └── ojs/               # OJS template
+│   │       ├── service.go      # Implements template.Template
+│   │       ├── config.go      # DefaultConfig
+│   │       ├── correlator.go  # CorrelateFile
+│   │       ├── orphan.go      # DetectOrphans
+│   │       ├── metrics.go     # GetMetrics
+│   │       ├── integrity.go   # ValidateIntegrity
+│   │       ├── detector.go    # Version detection
+│   │       ├── handlers.go    # HTTP handlers
+│   │       └── mysql/         # OJS MySQL queries
+│   │           ├── connection.go
+│   │           └── queries.go
 │   │
 │   └── wire/                   # Dependency injection
 │
-├── database/                   # SQLite database files
-│   └── ojs_monitor.db
-│
-└── data/                      # Data files
+└── database/
+    ├── migrations/             # Database migrations
+    └── ojs_monitor.db         # SQLite database
 ```
-
-### Domain Layer (`internal/domain/`)
-
-Contains **pure business logic** with NO external dependencies:
-- `models/` - Data structures (Project, ProjectFile, FIMEvent, etc.)
-- `repository/` - Repository interfaces (ProjectRepository, FileRepository, etc.)
-- `template/` - Template interface for CMS-specific detection
-- `service/` - Service interfaces
-
-### Application Layer (`internal/application/`)
-
-Contains **use cases** that orchestrate domain logic:
-- `usecase/` - Business operations (scan, fim, project, job, file, auth)
-- `dto/` - Request/Response DTOs
-
-### Infrastructure Layer (`internal/infrastructure/`)
-
-Implements domain interfaces with **concrete technology**:
-- `database/sqlite/` - SQLite repositories
-- `database/mysql/` - MySQL connections for CMS databases
-- `http/` - HTTP handlers and router
-- `auth/` - Authentication service
-- `scanner/` - Generic file scanning
-- `watcher/` - Real-time FIM using fsnotifywait
-- `worker/` - Background job processor
-- `templates/` - CMS-specific implementations
 
 ---
 
-## Binaries
+## Template System
 
-| Binary | Purpose | Entry Point |
-|--------|---------|-------------|
-| `manage` | CLI tool for DB management & server control | `cmd/manage/` |
-| `fim-server` | HTTP API server | `cmd/server/` |
-| `worker` | Background job processor | `cmd/worker/` |
+### Architecture
+
+```
+domain/template/ (interfaces - GENERIK)
+├── template.go      # Template interface
+└── registry.go     # Template registry
+
+templates/ojs/ (implementasi - SPESIFIK)
+├── service.go      # implements template.Template (entry point)
+├── config.go      # DefaultConfig()
+├── correlator.go  # CorrelateFile()
+├── orphan.go      # DetectOrphans()
+├── metrics.go     # GetMetrics()
+├── integrity.go   # ValidateIntegrity()
+└── mysql/         # OJS-specific database code
+```
+
+### Template Interface
+
+```go
+type Template interface {
+    Name() string                                    // "ojs", "wordpress"
+    Version() string                                 // "3.x", "6.x"
+    Priority() int                                   // Detection priority
+    
+    DefaultConfig() *TemplateConfig                  // Default settings
+    
+    CreateDBConnection(ctx, config) DBConnection    // CMS-specific connection
+    
+    // Optional - return nil if not supported
+    DetectOrphans(ctx, db, files) ([]*ProjectFile, error)
+    GetMetrics(ctx, db) (*TemplateMetrics, error)
+    ValidateIntegrity(ctx, db, project) ([]IntegrityWarning, error)
+    CorrelateFile(ctx, db, filePath, eventType) (*CorrelationResult, error)
+    
+    RequiredDBConfig() []string                      // Required DB fields
+    Compatible(ctx, db) (bool, error)             // Auto-detect
+}
+```
+
+### Project Without Template
+
+Projects can exist WITHOUT a template (pure FIM mode):
+
+```sql
+-- template_id is nullable
+projects.template_id INTEGER REFERENCES templates(id)
+```
+
+The project works with generic FIM:
+- File scanning (hash, permissions)
+- Real-time watching (fsnotify)
+- Alert dispatching
+
+Template enrichment is **optional**:
+- Correlation (who uploaded/modified)
+- Orphan detection
+- CMS-specific metrics
+
+---
+
+## Layer Responsibilities
+
+### Domain Layer (`internal/domain/`)
+
+**AGNOSTIC** - Pure interfaces, no external dependencies:
+- `models/` - Data structures (Project, ProjectFile, FIMEvent)
+- `repository/` - Repository interfaces
+- `template/` - Template interface (interface only, no template knowledge)
+
+### Application Layer (`internal/application/`)
+
+**USE CASES** - Business logic orchestration:
+- `usecase/scan/` - Scan operations
+- `usecase/fim/` - FIM event operations
+- `usecase/project/` - Project CRUD
+- `usecase/job/` - Job management
+
+### Infrastructure Layer (`internal/infrastructure/`)
+
+**GENERIC** - Implements interfaces, no CMS knowledge:
+- `database/sqlite/` - SQLite repositories
+- `http/` - HTTP handlers
+- `scanner/` - Generic file scanning
+- `watcher/` - Real-time FIM using fsnotify
+- `worker/` - Background job processor
+- `alert/` - Alert dispatcher
+
+### Templates Layer (`internal/templates/`)
+
+**SPECIFIC** - CMS-specific implementations:
+- `templates/ojs/` - All OJS-specific logic
+- `templates/wordpress/` - (future)
+- `templates/drupal/` - (future)
+
+---
+
+## Adding a New Template
+
+1. Create directory: `internal/templates/<name>/`
+2. Implement `template.Template` interface
+3. Create `mysql/` package for CMS-specific queries
+4. Register in `init.go`:
+
+```go
+// internal/templates/wordpress/init.go
+func init() {
+    template.Register(New())
+}
+```
+
+---
+
+## Database Schema
+
+### Projects Table
+
+```sql
+CREATE TABLE projects (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    template TEXT,                    -- Nullable (generic projects allowed)
+    template_id INTEGER REFERENCES templates(id),  -- Nullable
+    template_version TEXT,
+    -- ... other fields
+);
+```
+
+### Templates Table
+
+```sql
+CREATE TABLE templates (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,       -- "ojs", "wordpress"
+    version TEXT NOT NULL,            -- "3.x", "6.x"
+    priority INTEGER DEFAULT 100,
+    default_config TEXT,              -- JSON config
+    enabled INTEGER DEFAULT 1
+);
+```
 
 ---
 
@@ -128,68 +331,22 @@ Implements domain interfaces with **concrete technology**:
 ### 1. Initial Setup
 
 ```bash
-# Build all binaries
 cd backend
 make build
-
-# Run migrations
 ./manage migrate
-
-# Create admin user
-./manage add-admin <username> <password>
-
-# Or use default admin
 ./manage seed  # Creates admin/admin123
 ```
 
-### 2. Start Services (Daemon Mode)
+### 2. Start Services
 
 ```bash
-# Start server + worker together (daemon mode)
+# Daemon mode
 ./manage server:start
 
-# Check service status
-./manage server:status
-
-# Stop services
-./manage server:stop
-
-# Restart services
-./manage server:restart
+# Or separately
+./fim-server    # Terminal 1
+./worker        # Terminal 2
 ```
-
-### 3. Or Start Separately (Manual Mode)
-
-```bash
-# Terminal 1: Start API server
-./fim-server
-
-# Terminal 2: Start background worker
-./worker
-```
-
-### 4. Check Status
-
-```bash
-./manage status
-```
-
----
-
-## Server Management
-
-The `manage` CLI controls server and worker processes using **PID files**:
-
-| Command | Description |
-|---------|-------------|
-| `manage server:start` | Start server + worker (daemon) |
-| `manage server:stop` | Stop server + worker gracefully |
-| `manage server:restart` | Restart all services |
-| `manage server:status` | Show service status |
-
-PID files are stored in the same directory as binaries:
-- `.server.pid` - Server process ID
-- `.worker.pid` - Worker process ID
 
 ---
 
@@ -197,39 +354,10 @@ PID files are stored in the same directory as binaries:
 
 ```bash
 make build              # Build all binaries
-make clean            # Remove binaries
 make test             # Run tests
-make test-race        # Run tests with race detector
-make status           # Show system status
-make migrate          # Run migrations
-make server:start     # Start server + worker
-make server:stop      # Stop server + worker
-make server:restart   # Restart services
-make server:status    # Show service status
+make server:start     # Start services
+make server:stop      # Stop services
 ```
-
----
-
-## Template System
-
-Templates provide **CMS-specific detection logic**:
-
-### OJS Template (`internal/templates/ojs/`)
-- Orphan detection (files not in submission_files)
-- User metrics (new users, validated users)
-- Journal statistics
-- Version detection
-
-### Future Templates
-- WordPress Template
-- Drupal Template
-- Custom Template
-
-### Adding a New Template
-
-1. Create `internal/templates/<name>/`
-2. Implement `Template` interface
-3. Register in application
 
 ---
 
@@ -242,33 +370,12 @@ Always work from:
 
 ---
 
-## Build Rules
-
-All builds from repository root (`/home/arissupriy/stai/ojs-monitor`):
+## Build & Test
 
 ```bash
-make build           # Build all binaries to bin/
-cd backend
 go build ./...      # Build all packages
 go test ./...       # Run all tests
-go test -race ./... # Race detector
 ```
-
-Binary outputs (in `backend/bin/`):
-- `backend/bin/manage`
-- `backend/bin/fim-server`
-- `backend/bin/worker`
-
----
-
-## Database
-
-SQLite database:
-```
-backend/database/ojs_monitor.db
-```
-
-Migrations run automatically on startup via `wire.InitDB()`.
 
 ---
 
@@ -300,18 +407,8 @@ Unless explicitly requested.
 
 ## Git Policy
 
-Allowed:
-- `git diff`
-- `git status`
-- `git show`
-- `git log`
-
-Disallowed (unless requested):
-- `git push`
-- `git merge`
-- `git rebase`
-- `git tag`
-- `git force push`
+Allowed: `git diff`, `git status`, `git show`, `git log`
+Disallowed: `git push`, `git merge`, `git rebase`, `git force push`
 
 ---
 
@@ -326,15 +423,90 @@ When done, always report:
 
 Don't say something succeeded without verification.
 
----
+## AI Memory System (Graphify + Mem0 + Obsidian)
 
-## Engineering Mindset
+### MEMORY COLLECTIONS (Named Memories)
 
-Before changing code:
-1. Understand the architecture
-2. Find root cause
-3. Make minimal changes
-4. Verify results
-5. Avoid regressions
+**WAJIB query memory ini di setiap session baru:**
 
-Prioritize correctness over speed.
+| Collection | Query Pattern | Contents |
+|------------|--------------|----------|
+| `ojs-monitor:context` | "ojs monitor project overview architecture" | Project overview, tech stack, purpose |
+| `ojs-monitor:decisions` | "ojs monitor design decision architecture rationale" | Design decisions & why |
+| `ojs-monitor:progress` | "ojs monitor progress implementation milestone" | Current status, what's done |
+| `ojs-monitor:preferences` | "ojs monitor user preference settings config" | User preferences |
+
+### MEMORY WORKFLOW (MANDATORY)
+
+```
+SESSION START
+    │
+    ├─► 1. mcp__mem0-memory__search_memories(
+    │       query="ojs monitor project overview architecture",
+    │       user_id="ojs-monitor", top_k=5)
+    │
+    ├─► 2. mcp__mem0-memory__search_memories(
+    │       query="ojs monitor design decision",
+    │       user_id="ojs-monitor", top_k=3)
+    │
+    ├─► 3. mcp__mem0-memory__search_memories(
+    │       query="ojs monitor progress implementation",
+    │       user_id="ojs-monitor", top_k=3)
+    │
+    └─► 4. graphify query → Get code context
+            ↓
+        Answer user question
+            ↓
+        If major decision → SAVE to Mem0
+            ↓
+        If code changed → graphify update + obsidian export
+```
+
+### SAVE MEMORY COMMANDS
+
+```bash
+# Save to ojs-monitor:context
+mcp__mem0-memory__add_memory(
+    text="[ojs-monitor:context] OJS Monitor - FIM Platform...",
+    user_id="ojs-monitor"
+)
+
+# Save to ojs-monitor:decisions
+mcp__mem0-memory__add_memory(
+    text="[ojs-monitor:decisions] Decision: fsnotify for FIM...",
+    user_id="ojs-monitor"
+)
+
+# Save to ojs-monitor:progress
+mcp__mem0-memory__add_memory(
+    text="[ojs-monitor:progress] Phase 1: Scanner complete...",
+    user_id="ojs-monitor"
+)
+```
+
+### MEMORY COLLECTIONS (Named Memories)
+
+**WAJIB query memory ini di setiap session:**
+
+| Memory Name | Query Pattern | Contents |
+|-------------|--------------|----------|
+| `ojs-monitor:context` | "ojs monitor fim scanner watcher context" | Project overview, architecture, tech stack |
+| `ojs-monitor:decisions` | "ojs monitor design decision architecture" | Design decisions & rationale |
+| `ojs-monitor:progress` | "ojs monitor progress fase implementasi" | Implementation progress & milestones |
+| `ojs-monitor:preferences` | "ojs monitor user preference settings" | User preferences for this project |
+
+**Commands:**
+```bash
+# Search memories by pattern
+mcp__mem0-memory__search_memories(query="ojs monitor context", user_id="ojs-monitor", top_k=5)
+
+# List all project memories
+mcp__mem0-memory__get_memories(user_id="ojs-monitor", top_k=50)
+
+# Save new memory
+mcp__mem0-memory__add_memory(
+    user_id="ojs-monitor",
+    text="Memory content here",
+    metadata={"collection": "ojs-monitor:context", "type": "project-info"}
+)
+```

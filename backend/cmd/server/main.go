@@ -13,7 +13,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
-	infraauth "ojs-monitor/backend/internal/infrastructure/auth"
+	infraalert "ojs-monitor/backend/internal/infrastructure/alert"
+	"ojs-monitor/backend/internal/infrastructure/auth"
 	"ojs-monitor/backend/internal/infrastructure/database/sqlite"
 	infrahttp "ojs-monitor/backend/internal/infrastructure/http"
 	"ojs-monitor/backend/internal/infrastructure/http/handlers"
@@ -25,6 +26,7 @@ import (
 	"ojs-monitor/backend/internal/application/usecase/fim"
 	"ojs-monitor/backend/internal/application/usecase/job"
 	"ojs-monitor/backend/internal/application/usecase/file"
+	"ojs-monitor/backend/internal/application/usecase/alert"
 	"ojs-monitor/backend/internal/templates/ojs"
 	"ojs-monitor/backend/internal/wire"
 )
@@ -95,6 +97,22 @@ func main() {
 	fileRepo := sqlite.NewFileRepository(sqliteDB)
 	fimEventRepo := sqlite.NewFIMEventRepository(sqliteDB)
 	authRepo := sqlite.NewAuthRepository(sqliteDB)
+	alertConfigRepo := wire.AlertConfig()
+	alertHistoryRepo := wire.AlertHistory()
+
+	// Create and start alert dispatcher
+	dispatcher := infraalert.NewDispatcher(alertConfigRepo, alertHistoryRepo)
+	// Register alert channels
+	dispatcher.RegisterChannel("email", &infraalert.EmailChannel{})
+	dispatcher.RegisterChannel("slack", &infraalert.SlackChannel{})
+	dispatcher.RegisterChannel("webhook", &infraalert.WebhookChannel{})
+	// Connect watcher to alert dispatcher
+	watcher.SetAlertDispatcher(dispatcher)
+	// Start the dispatcher
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go dispatcher.Start(ctx)
+	defer dispatcher.Stop()
 
 	// Use cases
 	projectUC := project.New(projectRepo)
@@ -103,9 +121,10 @@ func main() {
 	jobUC := job.New(jobRepo)
 	fileUC := file.New(fileRepo, projectRepo)
 	authUC := appauth.New(authRepo)
+	alertUC := alert.NewUsecase(alertConfigRepo, alertHistoryRepo)
 
 	// Auth service
-	authService := infraauth.New(infraauth.DefaultConfig())
+	authService := auth.New(auth.DefaultConfig())
 
 	// Handlers
 	projectHandler := handlers.NewProjectHandler(projectUC)
@@ -114,6 +133,7 @@ func main() {
 	jobHandler := handlers.NewJobHandler(jobUC)
 	fileHandler := handlers.NewFileHandler(fileUC)
 	authHandler := handlers.NewAuthHandler(authUC, authService)
+	alertHandler := handlers.NewAlertHandler(alertUC)
 
 	// OJS template handler
 	ojsHandler := ojs.NewHandler(projectRepo, fileRepo)
@@ -126,6 +146,7 @@ func main() {
 		AuthHandler:    authHandler,
 		JobHandler:     jobHandler,
 		FileHandler:    fileHandler,
+		AlertHandler:   alertHandler,
 		OJSHandler:     ojsHandler,
 		ValidateToken:  authService.ValidateTokenFunc(),
 	})
@@ -150,6 +171,7 @@ func main() {
 	_ = authUC
 	_ = projectUC
 	_ = scanUC
+	_ = alertUC
 
 	// Start Server
 	if err := http.ListenAndServe(addr, r); err != nil {

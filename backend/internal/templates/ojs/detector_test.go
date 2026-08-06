@@ -52,9 +52,18 @@ func TestService_DefaultConfig(t *testing.T) {
 		t.Errorf("Template = %q, want %q", cfg.Template, "ojs")
 	}
 
+	if cfg.DisplayName == "" {
+		t.Error("DisplayName should not be empty")
+	}
+
 	// Check default watch paths
 	if len(cfg.DefaultWatchPaths) == 0 {
 		t.Error("DefaultWatchPaths should not be empty")
+	}
+
+	// Check default files paths
+	if len(cfg.DefaultFilesPaths) == 0 {
+		t.Error("DefaultFilesPaths should not be empty")
 	}
 
 	// Check default blacklist
@@ -83,16 +92,61 @@ func TestService_DefaultConfig(t *testing.T) {
 	}
 }
 
-func TestDetectVersion(t *testing.T) {
-	// Test with empty paths
+func TestService_DefaultConfig_Blacklist(t *testing.T) {
+	s := New()
+	cfg := s.DefaultConfig()
+
+	// Check that dangerous extensions are blacklisted
+	dangerous := []string{"php", "phtml", "php3", "php4", "php5", "php7", "pht", "phar"}
+	for _, ext := range dangerous {
+		found := false
+		for _, bl := range cfg.DefaultBlacklistExts {
+			if bl == ext {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected dangerous extension %q to be blacklisted", ext)
+		}
+	}
+}
+
+func TestService_DefaultConfig_Whitelist(t *testing.T) {
+	s := New()
+	cfg := s.DefaultConfig()
+
+	// Check whitelist paths
+	whitelist := []string{"lib/pkp/classes/", "plugins/generic/", "plugins/themes/"}
+	for _, path := range whitelist {
+		found := false
+		for _, wp := range cfg.DefaultWhitelistPaths {
+			if wp == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected whitelist path %q to be whitelisted", path)
+		}
+	}
+}
+
+func TestDetectVersion_EmptyPaths(t *testing.T) {
 	version := DetectVersion([]string{})
 	if version == "" {
 		t.Error("DetectVersion should return a version string, got empty")
 	}
 }
 
-func TestIsOJSPath(t *testing.T) {
-	// Test with non-existent path
+func TestDetectVersion_NonExistentPath(t *testing.T) {
+	version := DetectVersion([]string{"/nonexistent/path"})
+	if version == "" {
+		t.Error("DetectVersion should return a version string even with non-existent paths")
+	}
+}
+
+func TestIsOJSPath_NonExistent(t *testing.T) {
 	if IsOJSPath("/nonexistent/path") {
 		t.Error("IsOJSPath should return false for non-existent path")
 	}
@@ -101,4 +155,22 @@ func TestIsOJSPath(t *testing.T) {
 func TestService_ImplementsTemplate(t *testing.T) {
 	s := New()
 	var _ template.Template = s
+}
+
+func TestGetDefaultConfig(t *testing.T) {
+	cfg := getDefaultConfig()
+
+	if cfg.Template != "ojs" {
+		t.Errorf("Template = %q, want %q", cfg.Template, "ojs")
+	}
+}
+
+func TestConfig_DisplayName(t *testing.T) {
+	s := New()
+	cfg := s.DefaultConfig()
+
+	expectedDisplayName := "Open Journal Systems (OJS) 3.x"
+	if cfg.DisplayName != expectedDisplayName {
+		t.Errorf("DisplayName = %q, want %q", cfg.DisplayName, expectedDisplayName)
+	}
 }

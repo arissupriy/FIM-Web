@@ -91,3 +91,5 @@ skills-lock.json
 
 
 venv/
+# Added by code-review-graph
+.code-review-graph/

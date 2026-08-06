@@ -14,6 +14,8 @@ import (
 	"github.com/go-chi/cors"
 
 	infraalert "ojs-monitor/backend/internal/infrastructure/alert"
+	infraacl "ojs-monitor/backend/internal/infrastructure/acl"
+	"ojs-monitor/backend/internal/infrastructure/audit"
 	"ojs-monitor/backend/internal/infrastructure/auth"
 	"ojs-monitor/backend/internal/infrastructure/database/sqlite"
 	infrahttp "ojs-monitor/backend/internal/infrastructure/http"
@@ -130,6 +132,8 @@ func main() {
 	projectHandler := handlers.NewProjectHandler(projectUC)
 	scanHandler := handlers.NewScanHandler(scanUC)
 	fimHandler := handlers.NewFIMHandler(projectRepo, fimEventRepo)
+	auditHandler := audit.NewAuditHandler(fimEventRepo, projectRepo)
+	aclHandler := infraacl.NewACLHandler(fimEventRepo, projectRepo)
 	jobHandler := handlers.NewJobHandler(jobUC)
 	fileHandler := handlers.NewFileHandler(fileUC)
 	authHandler := handlers.NewAuthHandler(authUC, authService)
@@ -143,6 +147,8 @@ func main() {
 		ProjectHandler: projectHandler,
 		ScanHandler:    scanHandler,
 		FIMHandler:     fimHandler,
+		AuditHandler:   auditHandler,
+		ACLHandler:    aclHandler,
 		AuthHandler:    authHandler,
 		JobHandler:     jobHandler,
 		FileHandler:    fileHandler,

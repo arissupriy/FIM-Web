@@ -7,6 +7,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 
+	"ojs-monitor/backend/internal/infrastructure/acl"
+	"ojs-monitor/backend/internal/infrastructure/audit"
 	"ojs-monitor/backend/internal/infrastructure/http/handlers"
 	httpMiddleware "ojs-monitor/backend/internal/infrastructure/http/middleware"
 	"ojs-monitor/backend/internal/templates/ojs"
@@ -17,6 +19,8 @@ type RouterConfig struct {
 	ProjectHandler *handlers.ProjectHandler
 	ScanHandler    *handlers.ScanHandler
 	FIMHandler    *handlers.FIMHandler
+	AuditHandler  *audit.AuditHandler
+	ACLHandler    *acl.ACLHandler
 	AuthHandler   *handlers.AuthHandler
 	JobHandler    *handlers.JobHandler
 	FileHandler   *handlers.FileHandler
@@ -95,6 +99,19 @@ func NewRouter(cfg RouterConfig) *chi.Mux {
 				r.Get("/projects/{id}/watcher/status", cfg.FIMHandler.GetWatcherStatus)
 				r.Post("/projects/{id}/watcher/start", cfg.FIMHandler.StartWatcher)
 				r.Post("/projects/{id}/watcher/stop", cfg.FIMHandler.StopWatcher)
+
+				// Auditd ingestion
+				if cfg.AuditHandler != nil {
+					r.Post("/audit/ingest", cfg.AuditHandler.IngestEvents)
+					r.Get("/audit/status", cfg.AuditHandler.GetStatus)
+				}
+
+				// ACL monitoring
+				if cfg.ACLHandler != nil {
+					r.Post("/acl/ingest", cfg.ACLHandler.IngestChanges)
+					r.Post("/acl/scan", cfg.ACLHandler.ScanACLs)
+					r.Get("/acl/status", cfg.ACLHandler.GetStatus)
+				}
 			})
 
 			// Alert endpoints
